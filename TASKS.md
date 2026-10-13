@@ -55,7 +55,7 @@ PART B — news reasons, summaries, fundamentals and outlooks
 7. For each item, find what news and analysts said about why the stock moved that day:
    - Bash: `curl -sS -A "Mozilla/5.0" "https://news.google.com/rss/search?q=<company short name>+share+when:3d&hl=en-IN&gl=IN&ceid=IN:en"` to see which outlets covered it (titles only; these links do not open).
    - WebSearch for the real articles, e.g. "<company> share price <date> Q2 results". Prefer Moneycontrol, Economic Times, Upstox, Business Standard, Livemint, NDTV Profit, CNBC-TV18 and brokerage notes.
-   - Read 2 to 4 articles. Moneycontrol, Economic Times and Upstox load with Bash `curl -sS -A "Mozilla/5.0" URL` plus BeautifulSoup (`pip install --break-system-packages -q beautifulsoup4 lxml`). Use WebFetch for the others.
+   - Read 2 to 4 articles. Moneycontrol, Economic Times and Upstox load with Bash `curl -sS -A "Mozilla/5.0" URL`; pull the text out with Python's built-in html.parser or re (do not install packages). Use WebFetch for the others.
    - Use only articles about this company published after its results were filed (results_filed_at in the item). Check this with the article's publish time.
    For day 2 to day 5, only add reasons that are new that day (a brokerage note, a follow-up story).
 8. Turn what you read into reasons. Each reason:
