@@ -1,6 +1,6 @@
 # Scheduled task instructions
 
-These are the saved prompts of the four Claude scheduled tasks. The real copies live in each task's settings; this file is the reference. Replace `PASTE_KEY_ID` and `PASTE_SECRET` (twice each) with the `earnings-radar-bot` access key **only inside the task settings**, never in this repo.
+These are the saved prompts of the four Claude scheduled tasks. The real copies live in each task's settings; this file is the reference. Replace the two `PASTE_...` values with the `earnings-radar-bot` access key **only inside the task settings**, never in this repo.
 
 ---
 
@@ -9,27 +9,32 @@ These are the saved prompts of the four Claude scheduled tasks. The real copies 
 ```
 You are running the Earnings Radar on a schedule. Nobody is watching: do not ask questions, keep chat output short, and finish every step you can.
 
-This task runs the owner's own script, radar.py, from his GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work on local files; the two curl commands below move those files to and from S3. Never type, edit or round a price, return or date yourself.
+This task runs the owner's own script, radar.py, from his GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work and saves everything to S3 by itself. Never type, edit or round a price, return or date yourself.
 
-AWS key for the owner's S3 bucket s3://trl-earnings-radar/earnings-radar/ (it can only read and write there). It is used only by the curl commands below, which the owner wrote for this task. radar.py never gets the key. Never print the secret on its own.
+AWS key for S3 (it can only read and write s3://trl-earnings-radar/earnings-radar/):
+AWS_ACCESS_KEY_ID=PASTE_KEY_ID_HERE
+AWS_SECRET_ACCESS_KEY=PASTE_SECRET_HERE
 
 SETUP
-1. The repo is public. Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar` (if ~/earnings-radar already exists, use it as it is). Nothing to install.
-2. DOWNLOAD the data from S3 into ~/earnings-radar/store. Run this exact Bash command once, before any radar.py command:
-   cd ~/earnings-radar && mkdir -p out && python3 radar.py files > out/files.txt && while read k; do c=$(curl -sS -o "store/$k" --create-dirs -w '%{http_code}' --aws-sigv4 "aws:amz:ap-south-1:s3" --user "PASTE_KEY_ID:PASTE_SECRET" "https://trl-earnings-radar.s3.ap-south-1.amazonaws.com/$k"); [ "$c" = 200 ] || rm -f "store/$k"; echo "$c $k"; done < out/files.txt > out/fetch.txt; cat out/fetch.txt
-   Every line must start with 200, or 404 (file not created yet). If any line shows another code, stop: run nothing else and give the codes in the final message.
-3. radar.py works only on the local files in ~/earnings-radar/store, with no key. Run every radar.py command below from ~/earnings-radar with `--local store`, exactly as written. Each command lists the files it changed in out/changed.txt.
-4. UPLOAD: right after every radar.py command that prints "file(s) to upload", and before the next radar.py command, run this exact Bash command:
-   cd ~/earnings-radar && while read k; do case "$k" in *.csv) t=text/csv;; *) t=application/json;; esac; curl -sS -f -o /dev/null -T "store/$k" -H "Content-Type: $t" --aws-sigv4 "aws:amz:ap-south-1:s3" --user "PASTE_KEY_ID:PASTE_SECRET" "https://trl-earnings-radar.s3.ap-south-1.amazonaws.com/$k" && echo "ok $k" || echo "FAILED $k"; done < out/changed.txt
-   If any line says FAILED, run the upload once more. If it still fails, name the files in the final message.
-If S3 answers 403 (AccessDenied, InvalidAccessKeyId, SignatureDoesNotMatch), say so in the final message.
+1. The repo is public. Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar`
+2. Nothing to install: radar.py uses only the Python standard library.
+3. Save the AWS key for this session only: Bash `mkdir -p ~/.aws` and write ~/.aws/credentials containing
+   [default]
+   aws_access_key_id = <the ID above>
+   aws_secret_access_key = <the secret above>
+   and ~/.aws/config containing
+   [default]
+   region = ap-south-1
+   Never print the secret.
+4. Run every command below from ~/earnings-radar.
+If the script stops with an AWS error (AccessDenied, InvalidAccessKeyId, SignatureDoesNotMatch), say so in the final message.
 ```
 
 ## Morning (08:45 IST, weekdays)
 
 ```
 RUN
-5. Bash: `python3 radar.py --local store morning,check,log --task morning`
+5. Bash: `python3 radar.py morning,check,log --task morning`
 
 FINAL MESSAGE (one or two lines): how many Nifty 500 companies were added for today (name them if 10 or fewer) and how many are still waiting for results. If today is a market holiday, say so.
 ```
@@ -38,7 +43,7 @@ FINAL MESSAGE (one or two lines): how many Nifty 500 companies were added for to
 
 ```
 RUN
-5. Bash: `python3 radar.py --local store check,log --task afternoon`
+5. Bash: `python3 radar.py check,log --task afternoon`
 
 FINAL MESSAGE (one line): which stocks filed results so far today and their reaction day, and how many are still waiting.
 ```
@@ -47,7 +52,7 @@ FINAL MESSAGE (one line): which stocks filed results so far today and their reac
 
 ```
 PART A — results and prices
-5. Bash: `python3 radar.py --local store evening`
+5. Bash: `python3 radar.py evening`
 
 PART B — news reasons, summaries, fundamentals and outlooks
 6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, out/fundamentals_todo.json, out/outlook_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
@@ -86,9 +91,9 @@ PART B — news reasons, summaries, fundamentals and outlooks
 10. Write res/reasons.json (create the res folder) as
     {"<event_id>": {"days_read": [day numbers you read], "reasons": [...], "summary": {...}, "fundamentals": {"d1": [...]}, "outlook": {...} }}
     Leave out "summary" when none is due for that stock. Put each fundamentals table under its view ("d1" or "d5"); leave out "fundamentals" when none is due. Leave out "outlook" unless the stock is in outlook_todo.json.
-11. Bash: `python3 radar.py --local store merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z). Add "; F fundamentals tables" and "; O outlooks" to the notes when you wrote any.
-    If nothing was due in Part B, run `python3 radar.py --local store log --task evening` instead.
-    If Part B could not be finished, run `python3 radar.py --local store log --task evening --status partial --notes "<what failed>"`.
+11. Bash: `python3 radar.py merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z). Add "; F fundamentals tables" and "; O outlooks" to the notes when you wrote any.
+    If nothing was due in Part B, run `python3 radar.py log --task evening` instead.
+    If Part B could not be finished, run `python3 radar.py log --task evening --status partial --notes "<what failed>"`.
 
 FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, any summaries completed, how many fundamentals tables and outlooks were written (with each outlook's stance). Mention any missing NSE closes the script reported.
 ```
@@ -99,7 +104,7 @@ The shared block above, then:
 
 ```
 RUN
-5. Bash: `python3 radar.py --local store hypo`
+5. Bash: `python3 radar.py hypo`
    It writes out/hypo_todo.json: the window (from, to) and, for each sector (NSE industry) with results filed in the window, its stocks with their day-1 and total moves vs the sector index, 5-day summary, fundamentals, news reasons and outlook stance, plus sector stats (stocks, how many beat the sector, average abnormal moves). These figures come from the script; never change them.
 6. For each sector in hypo_todo.json (every one, even with a single stock), write a hypothesis: what best explains how the market reacted to this sector's results in this window. Use the stocks' data in the file. For sectors with 2 or more stocks you may run up to 2 WebSearches for sector-level coverage published in the window, e.g. "<sector> Q2 results brokerages view" (Moneycontrol, Economic Times, Business Standard, Livemint, CNBC-TV18, NDTV Profit, broker notes).
    {"hypothesis": "one or two plain sentences: a clear, testable claim, e.g. 'Investors rewarded margin expansion over revenue growth: the stocks that grew EBITDA margin beat Nifty IT, those with revenue beats but margin cuts lagged.'",
@@ -111,9 +116,9 @@ RUN
     "confidence": "low" | "medium" | "high" (a single stock, or stocks that disagree, is "low")}
    Rules: write in your own words; never invent a figure or a source; no buy, sell or hold wording and no price targets.
 7. Write res/hypotheses.json (create the res folder) as {"sectors": {"<sector name exactly as in hypo_todo.json>": {...}}}.
-8. Bash: `python3 radar.py --local store hyposave,log res/hypotheses.json --task hypotheses --notes "S sectors, N stocks"` (fill in S and N).
-   If hypo_todo.json has no sectors, run `python3 radar.py --local store log --task hypotheses --notes "no results filed in the window"` instead.
-   If you could not finish, run `python3 radar.py --local store log --task hypotheses --status partial --notes "<what failed>"`.
+8. Bash: `python3 radar.py hyposave,log res/hypotheses.json --task hypotheses --notes "S sectors, N stocks"` (fill in S and N).
+   If hypo_todo.json has no sectors, run `python3 radar.py log --task hypotheses --notes "no results filed in the window"` instead.
+   If you could not finish, run `python3 radar.py log --task hypotheses --status partial --notes "<what failed>"`.
 
 FINAL MESSAGE (two or three lines): the window dates, how many sectors and stocks, and the one-line hypothesis of the two sectors with the most stocks.
 ```

@@ -15,7 +15,7 @@ Four Claude scheduled tasks (IST) — prompts in [TASKS.md](TASKS.md):
 | Evening | 20:50 weekdays | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
 | Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported in the last 15 days |
 
-`radar.py` does all the number work. Claude only reads the news. It needs no packages and never holds the AWS key: each task downloads the season's files from S3 with `curl --aws-sigv4`, runs `radar.py --local store` on them, then uploads the files the script lists in `out/changed.txt`. If any download fails (other than 404), the script refuses to run, so a bad download can never overwrite good data.
+`radar.py` does all the number work. Claude only reads the news. It needs no packages (S3 is reached with the Python standard library). Each task saves the AWS key to `~/.aws/credentials` for that session. `radar.py --local DIR` plus `radar.py files` and `out/changed.txt` also let a task move files with curl instead, so the script never holds the key.
 
 ## Fundamentals tables
 
