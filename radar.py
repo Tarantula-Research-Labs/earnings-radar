@@ -10,6 +10,7 @@ Storage: S3, s3://<bucket>/<prefix>/<season>/ (see config/settings.json)
   events.json   every stock-quarter on the radar, with its prices and reasons
   runs.json     run log, keyed by date
   csv/*.csv     events, prices, reasons, summaries, run_log (flat tables)
+  snapshots/<YYYY-MM-DD>/   copy of all of the above as it stood after that day's last run
 On the first run of a season, events start from seed/<season>_events.json.
 Credentials come from the usual AWS environment variables.
 
@@ -239,11 +240,19 @@ class Store:
             print(f"\nNothing changed; nothing saved to {self.where()}."); return
         self._write("events.json", json.dumps(self.events, ensure_ascii=False), "application/json")
         self._write("runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
-        for name, text in export_csvs(self.events, self.runs).items():
+        csvs = export_csvs(self.events, self.runs)
+        for name, text in csvs.items():
             self._write(f"csv/{name}.csv", text, "text/csv")
+        # Daily snapshot: the state at the end of today's latest run (overwritten by later runs the same day).
+        day = now_ist().date().isoformat()
+        snap = f"snapshots/{day}"
+        self._write(f"{snap}/events.json", json.dumps(self.events, ensure_ascii=False), "application/json")
+        self._write(f"{snap}/runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
+        for name, text in csvs.items():
+            self._write(f"{snap}/csv/{name}.csv", text, "text/csv")
         n_ev = sum(1 for k in self.changed if k.startswith("events/"))
         print(f"\nSaved to {self.where()}: events.json ({len(self.events)} events, {n_ev} changed), "
-              f"runs.json, csv/ (5 files).")
+              f"runs.json, csv/ (5 files), and a copy in {snap}/.")
 
 def _csv(rows, cols):
     buf = io.StringIO(); w = csv.writer(buf)
@@ -391,7 +400,7 @@ def cmd_evening(db, args):
         rd = d_parse(e["reaction_day"])
         if rd > today: continue
         days = [prev_td(rd), rd]
-        while len(days) < NEWS_DAYS + 2: days.append(next_td(days[-1]))
+        while len(days) < NEWS_DAYS + 1: days.append(next_td(days[-1]))  # D0..D5, never D6
         sym, sx = e["symbol"], e.get("sector_index") or "Nifty 500"
         old = {p.get("day_n"): p for p in e.get("prices") or []}
         rows = []

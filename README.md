@@ -32,6 +32,7 @@ Three Claude scheduled tasks (weekdays, IST) — prompts in [TASKS.md](TASKS.md)
 | `events.json` | Every stock-quarter: filing time, reaction day, prices, reasons, summary |
 | `runs.json` | Run log by date |
 | `csv/events.csv`, `prices.csv`, `reasons.csv`, `summaries.csv`, `run_log.csv` | The same data as flat tables, ready for Postgres |
+| `snapshots/<YYYY-MM-DD>/` | Copy of all of the above as it stood after that day's last run |
 
 The first run of a season starts from `seed/<season>_events.json` if S3 has nothing yet.
 
