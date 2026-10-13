@@ -20,6 +20,7 @@ Commands (chain with commas, e.g. morning,check,log)
   check    [--now T]                look for filed results, set reaction day
   evening  [--now T]                check + prices/returns for every tracked stock
   merge    <reasons.json>           add news reasons, 5-day summaries, fundamentals, outlooks
+  files                             print the S3 keys a run needs (the task downloads them into ./store)
   hypo     [--date D]               every 15 days: group the window's reporters by sector -> out/hypo_todo.json
   hyposave <hypotheses.json>        save the sector hypotheses to <prefix>/hypotheses/
   log      --task T [--status S] [--notes N]   add a run-log line
@@ -254,6 +255,7 @@ class Store:
         self.bucket = st.get("bucket"); self.region = st.get("region", "ap-south-1")
         self.prefix = f"{st.get('prefix', 'earnings-radar')}/{self.sc}"
         self._s3 = None
+        self.written = []   # keys written in --local mode (the upload list)
         self.events = self._read_json("events.json")
         if self.events is None:
             seed = os.path.join(REPO, "seed", f"{self.sc}_events.json")
@@ -288,6 +290,8 @@ class Store:
             p = os.path.join(self.local, prefix, name)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f: f.write(text)
+            k = f"{prefix}/{name}"
+            if k not in self.written: self.written.append(k)
             return
         self.s3().put(f"{prefix}/{name}", text.encode("utf-8"), ctype)
 
@@ -988,6 +992,17 @@ def selftest(args):
     except Exception as e:
         print("S3 error:", e)
 
+# ---------------------------------------------------------------- files to download
+def cmd_files():
+    """Print the S3 keys a run needs, one per line (the task downloads them with curl into ./store)."""
+    cfg = read_repo_json("config", "settings.json")
+    root = cfg.get("storage", {}).get("prefix", "earnings-radar")
+    keys = []
+    for sc in [season_code(cfg)] + [re.sub(r"\s+", "", x) for x in cfg.get("track_seasons") or []]:
+        keys += [f"{root}/{sc}/events.json", f"{root}/{sc}/runs.json"]
+    keys.append(f"{root}/{HYPO_DIR}/hypotheses.json")
+    print("\n".join(dict.fromkeys(keys)))
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -999,6 +1014,17 @@ def main():
     args = ap.parse_args()
     steps = [c.strip() for c in args.cmd.split(",") if c.strip()]
     if steps == ["selftest"]: return selftest(args)
+    if steps == ["files"]: return cmd_files()
+    if args.local:
+        # The scheduled task downloads S3 files with curl before running the script (the script never holds
+        # the AWS key). If any download failed for a reason other than "not there yet" (404), stop before
+        # anything is changed, so a partial download can never overwrite good data.
+        fetch = os.path.join(args.out, "fetch.txt")
+        if os.path.exists(fetch):
+            bad = [ln.strip() for ln in open(fetch) if ln.strip() and ln.split()[0] not in ("200", "404")]
+            if bad:
+                print("Download from S3 failed, so nothing was run or saved:\n  " + "\n  ".join(bad), file=sys.stderr)
+                sys.exit(2)
     fns = {"morning": cmd_morning, "check": cmd_check, "evening": cmd_evening, "merge": cmd_merge,
            "hypo": cmd_hypo, "hyposave": cmd_hyposave}
     bad = [s for s in steps if s not in fns and s != "log"]
@@ -1022,6 +1048,11 @@ def main():
     if "log" in steps:
         cmd_log(db, args, auto_status=status, auto_notes="; ".join(notes))
     db.flush()
+    if args.local:
+        # Files this run wrote, for the task to upload to S3 with curl (one S3 key per line).
+        with open(os.path.join(args.out, "changed.txt"), "w") as f:
+            f.write("".join(k + "\n" for k in db.written))
+        print(f"{len(db.written)} file(s) to upload listed in {args.out}/changed.txt")
     if status != "ok": sys.exit(1)
 
 if __name__ == "__main__":
