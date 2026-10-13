@@ -55,7 +55,7 @@ PART A — results and prices
 5. Bash: `python3 radar.py evening`
 
 PART B — news reasons, summaries, fundamentals and outlooks
-6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, out/fundamentals_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
+6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, out/fundamentals_todo.json, out/outlook_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
    If news_todo has more than 25 items, do 25: day_n = 1 first, then the largest absolute abnormal. The rest stay for the next run.
 7. For each item, find what news and analysts said about why the stock moved that day:
    - Bash: `curl -sS -A "Mozilla/5.0" "https://news.google.com/rss/search?q=<company short name>+share+when:3d&hl=en-IN&gl=IN&ceid=IN:en"` to see which outlets covered it (titles only; these links do not open).
