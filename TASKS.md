@@ -9,7 +9,7 @@ These are the saved prompts of the four Claude scheduled tasks. The real copies 
 ```
 You are running the Earnings Radar on a schedule. Nobody is watching: do not ask questions, keep chat output short, and finish every step you can.
 
-This task runs the owner's own script, radar.py, from his GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work and saves everything to S3 by itself. Never type, edit or round a price, return or date yourself.
+This task runs the owner's own script, radar.py, from his GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work on local files; the two curl commands below move those files to and from S3. Never type, edit or round a price, return or date yourself.
 
 AWS key for the owner's S3 bucket s3://trl-earnings-radar/earnings-radar/ (it can only read and write there). It is used only by the curl commands below, which the owner wrote for this task. radar.py never gets the key. Never print the secret on its own.
 
