@@ -6,13 +6,14 @@ For each company that reports, it records when results were filed, picks the rea
 
 ## How it runs
 
-Three Claude scheduled tasks (weekdays, IST) — prompts in [TASKS.md](TASKS.md):
+Four Claude scheduled tasks (IST) — prompts in [TASKS.md](TASKS.md):
 
 | Task | Time | Does |
 |---|---|---|
-| Morning | 08:45 | Add today's reporters from the NSE event calendar |
-| Afternoon | 15:20 | Check NSE announcements for filed results |
-| Evening | 21:00 | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
+| Morning | 08:45 weekdays | Add today's reporters from the NSE event calendar |
+| Afternoon | 15:20 weekdays | Check NSE announcements for filed results |
+| Evening | 20:50 weekdays | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
+| Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported in the last 15 days |
 
 `radar.py` does all the number work. Claude only reads the news.
 
@@ -33,6 +34,10 @@ An outlook is written once and never changed. Every evening `radar.py` scores it
 | neutral | excess within ±3% |
 
 Between −2% and +2% a positive or negative call is "too close". At `horizon_end` the track is marked `final`. Earlier seasons' outlooks keep being scored after the season changes (the script finds every season folder in S3). Stored under `outlook` in `events.json` and in `csv/outlook.csv`. It is a model-generated research view, not investment advice.
+
+## Sector hypotheses
+
+Every 15 days (13th and 28th of each month) a separate task groups the stocks whose results were filed since the last window by sector (NSE industry) and writes, for each sector, a hypothesis of what drove the market's reaction: what the results showed, what the news emphasised, what analysts said, the evidence, and what would prove it wrong. The script adds the numbers (stocks, how many beat the sector, average abnormal moves). Stocks filed but not priced yet wait for the next window. Every window is kept in `s3://trl-earnings-radar/earnings-radar/hypotheses/hypotheses.json` and `hypotheses.csv`, outside the season folders.
 
 ## Rules
 

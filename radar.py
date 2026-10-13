@@ -19,6 +19,8 @@ Commands (chain with commas, e.g. morning,check,log)
   check    [--now T]                look for filed results, set reaction day
   evening  [--now T]                check + prices/returns for every tracked stock
   merge    <reasons.json>           add news reasons, 5-day summaries, fundamentals, outlooks
+  hypo     [--date D]               every 15 days: group the window's reporters by sector -> out/hypo_todo.json
+  hyposave <hypotheses.json>        save the sector hypotheses to <prefix>/hypotheses/
   log      --task T [--status S] [--notes N]   add a run-log line
 
 Flags: --out DIR (todo files + local snapshot, default ./out),
@@ -232,7 +234,7 @@ class Store:
         except Exception as ex:
             print(f"Could not list season folders ({ex}); using track_seasons only.")
         found.discard(self.sc)
-        return sorted(x for x in found if x)
+        return sorted(x for x in found if re.fullmatch(r"Q[1-4]FY\d{2}", x))
 
     def update_old_season(self, sc, fn):
         """Load an earlier season's events.json, let fn change it, save it back (with its CSVs) if fn returns True."""
@@ -271,14 +273,23 @@ class Store:
         self._snapshot()
         if not self.changed:
             print(f"\nNothing changed; nothing saved to {self.where()}."); return
+        day = now_ist().date().isoformat()
+        snap = f"snapshots/{day}"
+        if not any(k.startswith("events/") for k in self.changed):
+            # Only the run log changed: leave events.json alone so this run cannot overwrite
+            # stock data another run saved in the meantime.
+            self._write("runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
+            self._write(f"{snap}/runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
+            log = export_csvs({}, self.runs)["run_log"]
+            self._write("csv/run_log.csv", log, "text/csv"); self._write(f"{snap}/csv/run_log.csv", log, "text/csv")
+            print(f"\nSaved run log to {self.where()} (runs.json, csv/run_log.csv).")
+            return
         self._write("events.json", json.dumps(self.events, ensure_ascii=False), "application/json")
         self._write("runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
         csvs = export_csvs(self.events, self.runs)
         for name, text in csvs.items():
             self._write(f"csv/{name}.csv", text, "text/csv")
         # Daily snapshot: the state at the end of today's latest run (overwritten by later runs the same day).
-        day = now_ist().date().isoformat()
-        snap = f"snapshots/{day}"
         self._write(f"{snap}/events.json", json.dumps(self.events, ensure_ascii=False), "application/json")
         self._write(f"{snap}/runs.json", json.dumps(self.runs, ensure_ascii=False), "application/json")
         for name, text in csvs.items():
@@ -763,6 +774,117 @@ def cmd_merge(db, args):
     print("Merged: " + ("; ".join(done) or "nothing"))
     return {"merged": len(done)}
 
+# ---------------------------------------------------------------- sector hypotheses (every 15 days)
+# For each sector (NSE industry) with results filed in the window, the Hypotheses task writes what
+# seems to have driven the stocks' reactions: results, news and analyst views. Kept for every window in
+# <prefix>/hypotheses/hypotheses.json (+ hypotheses.csv), outside the season folders.
+HYPO_DIR = "hypotheses"
+HYPO_DAYS = 15
+
+def _mean(xs):
+    xs = [x for x in xs if isinstance(x, (int, float))]
+    return sum(xs) / len(xs) if xs else None
+
+def _hypo_prefix(db):
+    return db.season_prefix(HYPO_DIR)
+
+def _load_hypos(db):
+    return db._read_json("hypotheses.json", _hypo_prefix(db)) or {"windows": {}}
+
+def cmd_hypo(db, args):
+    """Write out/hypo_todo.json: the window's stocks grouped by sector, with their moves and evidence."""
+    today = d_parse(args.date) if args.date else now_ist().date()
+    wid = d_iso(today)
+    prev = [w for k, w in (_load_hypos(db).get("windows") or {}).items() if k < wid]
+    last_to = max((w.get("to") for w in prev), default=None)
+    frm = d_parse(last_to) + dt.timedelta(days=1) if last_to and (today - d_parse(last_to)).days <= 2 * HYPO_DAYS \
+        else today - dt.timedelta(days=HYPO_DAYS - 1)
+    pool = dict(db.events)
+    for sc in db.other_seasons():
+        pool.update(db._read_json("events.json", db.season_prefix(sc)) or {})
+    groups, too_early = {}, []
+    for eid, e in sorted(pool.items()):
+        if not e.get("results_filed_at"): continue
+        fd = d_parse(e["results_filed_at"])
+        if not (frm <= fd <= today): continue
+        if (e.get("day_count") or 0) < 1:
+            too_early.append(e.get("symbol")); continue
+        p = {x.get("day_n"): x for x in e.get("prices") or []}
+        fv = e.get("fundamentals") or {}
+        fblk = fv.get("d5") or fv.get("d1") or {}
+        s = e.get("summary") or {}
+        stock = {"event_id": eid, "symbol": e.get("symbol"), "company": e.get("company"),
+                 "results_filed_at": e.get("results_filed_at"), "reaction_day": e.get("reaction_day"),
+                 "days_tracked": e.get("day_count"),
+                 "d1_return": (p.get(1) or {}).get("log_return"), "d1_abnormal": (p.get(1) or {}).get("abnormal"),
+                 "total_return": e.get("cum_log_return"), "total_abnormal": e.get("cum_abnormal"),
+                 "verdict": s.get("verdict"), "top_positive": s.get("top_positive"), "top_negative": s.get("top_negative"),
+                 "fundamentals": [{k: r.get(k) for k in ("metric", "basis", "value", "change", "unit", "direction")}
+                                  for r in fblk.get("rows") or []],
+                 "reasons": [{k: r.get(k) for k in ("day_n", "direction", "category", "reason", "source")}
+                             for r in e.get("reasons") or []],
+                 "outlook_stance": (e.get("outlook") or {}).get("stance")}
+        key = e.get("industry") or e.get("sector_index") or "Other"
+        g = groups.setdefault(key, {"sector": key, "sector_index": e.get("sector_index"), "stocks": []})
+        g["stocks"].append(stock)
+    todo = []
+    for key, g in sorted(groups.items()):
+        st = g["stocks"]
+        g["stats"] = {"stocks": len(st), "beat_sector": sum(1 for x in st if (x["total_abnormal"] or 0) > 0),
+                      "avg_d1_abnormal": _mean([x["d1_abnormal"] for x in st]),
+                      "avg_total_abnormal": _mean([x["total_abnormal"] for x in st]),
+                      "finished_5_days": sum(1 for x in st if (x["days_tracked"] or 0) >= NEWS_DAYS)}
+        todo.append(g)
+    out = {"window_id": wid, "from": d_iso(frm), "to": wid, "sectors": todo, "too_early": too_early}
+    os.makedirs(db.out, exist_ok=True)
+    with open(os.path.join(db.out, "hypo_todo.json"), "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    print(f"Hypothesis window {frm} to {today}: {len(todo)} sector(s), "
+          f"{sum(len(g['stocks']) for g in todo)} stock(s) -> {db.out}/hypo_todo.json")
+    for g in todo:
+        print(f"  {g['sector']:<40} {g['stats']['stocks']} stock(s), {g['stats']['beat_sector']} beat sector, "
+              f"avg abnormal {fmt(g['stats']['avg_total_abnormal'])}")
+    if too_early: print("Filed but not priced yet (left out): " + ", ".join(too_early))
+    return {"sectors": len(todo), "stocks": sum(len(g["stocks"]) for g in todo)}
+
+CONF3 = {"low", "medium", "high"}
+
+def cmd_hyposave(db, args):
+    """Save the Hypotheses task's sector hypotheses for the window in out/hypo_todo.json."""
+    with open(os.path.join(db.out, "hypo_todo.json"), encoding="utf-8") as f: todo = json.load(f)
+    with open(args.file, encoding="utf-8") as f: inp = json.load(f)
+    by = {g["sector"]: g for g in todo["sectors"]}
+    secs = []
+    for name, h in (inp.get("sectors") or inp).items():
+        g = by.get(name)
+        if not g or not isinstance(h, dict): print(f"skip {name}: not a sector in this window"); continue
+        hyp = _txt(h.get("hypothesis"), 500)
+        if not hyp: print(f"skip {name}: no hypothesis"); continue
+        secs.append({"sector": name, "sector_index": g.get("sector_index"), "stats": g["stats"],
+                     "stocks": [{k: x.get(k) for k in ("event_id", "symbol", "company", "reaction_day", "days_tracked",
+                                                       "d1_abnormal", "total_abnormal")} for x in g["stocks"]],
+                     "hypothesis": hyp, "results_view": _txt(h.get("results_view"), 500),
+                     "news_view": _txt(h.get("news_view"), 500), "analyst_view": _txt(h.get("analyst_view"), 500),
+                     "evidence": _list(h.get("evidence"), 5, 200),
+                     "would_change_if": _txt(h.get("would_change_if"), 300),
+                     "confidence": h.get("confidence") if h.get("confidence") in CONF3 else "low"})
+    allh = _load_hypos(db)
+    allh.setdefault("windows", {})[todo["window_id"]] = {
+        "window_id": todo["window_id"], "from": todo["from"], "to": todo["to"], "written_at": stamp(),
+        "too_early": todo.get("too_early") or [], "sectors": secs}
+    pre = _hypo_prefix(db)
+    db._write("hypotheses.json", json.dumps(allh, ensure_ascii=False), "application/json", pre)
+    rows = [dict(sx, window_id=w["window_id"], window_from=w["from"], window_to=w["to"], written_at=w["written_at"],
+                 symbols=[x["symbol"] for x in sx["stocks"]], **{f"stat_{k}": v for k, v in sx["stats"].items()})
+            for _, w in sorted(allh["windows"].items()) for sx in w["sectors"]]
+    db._write("hypotheses.csv", _csv(rows, ["window_id", "window_from", "window_to", "written_at", "sector", "sector_index",
+                                             "symbols", "stat_stocks", "stat_beat_sector", "stat_avg_d1_abnormal",
+                                             "stat_avg_total_abnormal", "stat_finished_5_days", "confidence", "hypothesis",
+                                             "results_view", "news_view", "analyst_view", "evidence", "would_change_if"]),
+              "text/csv", pre)
+    print(f"Saved {len(secs)} sector hypothesis(es) for {todo['from']} to {todo['to']} -> {pre}/hypotheses.json")
+    return {"hypotheses": len(secs)}
+
 # ---------------------------------------------------------------- run log
 def cmd_log(db, args, auto_status="ok", auto_notes=""):
     today = now_ist().date().isoformat()
@@ -816,11 +938,12 @@ def main():
     args = ap.parse_args()
     steps = [c.strip() for c in args.cmd.split(",") if c.strip()]
     if steps == ["selftest"]: return selftest(args)
-    fns = {"morning": cmd_morning, "check": cmd_check, "evening": cmd_evening, "merge": cmd_merge}
+    fns = {"morning": cmd_morning, "check": cmd_check, "evening": cmd_evening, "merge": cmd_merge,
+           "hypo": cmd_hypo, "hyposave": cmd_hyposave}
     bad = [s for s in steps if s not in fns and s != "log"]
     if bad: ap.error(f"unknown command(s): {bad}")
-    if "merge" in steps:
-        if not args.files: ap.error("merge needs the reasons JSON file")
+    if "merge" in steps or "hyposave" in steps:
+        if not args.files: ap.error("merge / hyposave need a JSON file")
         args.file = args.files[0]
     args.started = args.started or stamp()
     db = Store(args.out, args.local)

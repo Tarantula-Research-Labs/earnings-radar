@@ -1,6 +1,6 @@
 # Scheduled task instructions
 
-These are the saved prompts of the three Claude scheduled tasks. The real copies live in each task's settings; this file is the reference. Replace the two `PASTE_...` values with the `earnings-radar-bot` access key **only inside the task settings**, never in this repo.
+These are the saved prompts of the four Claude scheduled tasks. The real copies live in each task's settings; this file is the reference. Replace the two `PASTE_...` values with the `earnings-radar-bot` access key **only inside the task settings**, never in this repo.
 
 ---
 
@@ -96,4 +96,29 @@ PART B — news reasons, summaries, fundamentals and outlooks
     If Part B could not be finished, run `python3 radar.py log --task evening --status partial --notes "<what failed>"`.
 
 FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, any summaries completed, how many fundamentals tables and outlooks were written (with each outlook's stance). Mention any missing NSE closes the script reported.
+```
+
+## Hypotheses (23:07 IST on the 13th and 28th of each month)
+
+The shared block above, then:
+
+```
+RUN
+5. Bash: `python3 radar.py hypo`
+   It writes out/hypo_todo.json: the window (from, to) and, for each sector (NSE industry) with results filed in the window, its stocks with their day-1 and total moves vs the sector index, 5-day summary, fundamentals, news reasons and outlook stance, plus sector stats (stocks, how many beat the sector, average abnormal moves). These figures come from the script; never change them.
+6. For each sector in hypo_todo.json (every one, even with a single stock), write a hypothesis: what best explains how the market reacted to this sector's results in this window. Use the stocks' data in the file. For sectors with 2 or more stocks you may run up to 2 WebSearches for sector-level coverage published in the window, e.g. "<sector> Q2 results brokerages view" (Moneycontrol, Economic Times, Business Standard, Livemint, CNBC-TV18, NDTV Profit, broker notes).
+   {"hypothesis": "one or two plain sentences: a clear, testable claim, e.g. 'Investors rewarded margin expansion over revenue growth: the stocks that grew EBITDA margin beat Nifty IT, those with revenue beats but margin cuts lagged.'",
+    "results_view": "one or two sentences: what the reported numbers showed across the sector",
+    "news_view": "one or two sentences: what the news coverage emphasised",
+    "analyst_view": "one or two sentences: what brokerages and analysts said (upgrades, downgrades, estimate changes); null if none found",
+    "evidence": [up to 4 short points, each naming a stock and its move or figure from hypo_todo.json],
+    "would_change_if": "one sentence: what would show this hypothesis is wrong",
+    "confidence": "low" | "medium" | "high" (a single stock, or stocks that disagree, is "low")}
+   Rules: write in your own words; never invent a figure or a source; no buy, sell or hold wording and no price targets.
+7. Write res/hypotheses.json (create the res folder) as {"sectors": {"<sector name exactly as in hypo_todo.json>": {...}}}.
+8. Bash: `python3 radar.py hyposave,log res/hypotheses.json --task hypotheses --notes "S sectors, N stocks"` (fill in S and N).
+   If hypo_todo.json has no sectors, run `python3 radar.py log --task hypotheses --notes "no results filed in the window"` instead.
+   If you could not finish, run `python3 radar.py log --task hypotheses --status partial --notes "<what failed>"`.
+
+FINAL MESSAGE (two or three lines): the window dates, how many sectors and stocks, and the one-line hypothesis of the two sectors with the most stocks.
 ```
