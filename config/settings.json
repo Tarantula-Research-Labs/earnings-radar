@@ -1,0 +1,55 @@
+{
+ "season": "Q2 FY27",
+ "universe_name": "Nifty 500 (includes Midcap 150)",
+ "timezone": "Asia/Kolkata",
+ "market_close_ist": "15:30",
+ "sector_index_map": {
+  "Financial Services": "Nifty Financial Services",
+  "Capital Goods": "Nifty Capital Goods",
+  "Healthcare": "Nifty500 Healthcare",
+  "Automobile and Auto Components": "Nifty Auto",
+  "Fast Moving Consumer Goods": "Nifty FMCG",
+  "Chemicals": "Nifty Chemicals",
+  "Information Technology": "Nifty IT",
+  "Consumer Services": "Nifty Consumer Services",
+  "Metals & Mining": "Nifty Metal",
+  "Power": "Nifty Power",
+  "Oil Gas & Consumable Fuels": "Nifty Oil & Gas",
+  "Consumer Durables": "Nifty Consumer Durables",
+  "Services": "Nifty Services Sector",
+  "Realty": "Nifty Realty",
+  "Construction": "Nifty Construction",
+  "Construction Materials": "Nifty Cement",
+  "Telecommunication": "Nifty Telecommunications",
+  "Media Entertainment & Publication": "Nifty Media",
+  "Textiles": "Nifty 500",
+  "Diversified": "Nifty 500"
+ },
+ "market_index": "Nifty 50",
+ "schedule": {
+  "morning": "08:45 IST weekdays",
+  "afternoon": "15:20 IST weekdays",
+  "evening": "21:00 IST weekdays"
+ },
+ "rules": {
+  "reaction_day": "Results filed before 15:30 IST on a trading day -> that day. Filed at/after 15:30, or on a non-trading day -> next trading day.",
+  "day_n": "D0 = base close (last close before results). D1 = reaction day. Track D1..D5 trading days.",
+  "returns": "log returns as decimals (0.0378 = 3.78%). abnormal = stock log return - sector index log return.",
+  "meeting_filter": "NSE event calendar rows whose purpose contains 'Financial Results', symbol in universe."
+ },
+ "sources": {
+  "calendar": "https://www.nseindia.com/api/event-calendar?index=equities&from_date=DD-MM-YYYY&to_date=DD-MM-YYYY",
+  "announcements": "https://www.nseindia.com/api/corporate-announcements?index=equities&from_date=DD-MM-YYYY&to_date=DD-MM-YYYY",
+  "stock_close": "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_YYYYMMDD_F_0000.csv.zip (SctySrs=EQ, ClsPric)",
+  "index_close": "https://nsearchives.nseindia.com/content/indices/ind_close_all_DDMMYYYY.csv",
+  "backup_prices": "https://query1.finance.yahoo.com/v8/finance/chart/SYMBOL.NS?range=10d&interval=1d",
+  "news_search": "https://news.google.com/rss/search?q=QUERY+when:2d&hl=en-IN&gl=IN&ceid=IN:en"
+ },
+ "schema_version": 1,
+ "updated_at": "2026-10-13T12:48:13+05:30",
+ "storage": {
+  "bucket": "trl-earnings-radar",
+  "prefix": "earnings-radar",
+  "region": "ap-south-1"
+ }
+}

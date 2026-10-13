@@ -1,0 +1,7 @@
+__pycache__/
+.cache/
+out/
+res/
+store/
+.aws/
+*.env
