@@ -15,7 +15,7 @@ Four Claude scheduled tasks (IST) — prompts in [TASKS.md](TASKS.md):
 | Evening | 20:50 weekdays | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
 | Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported in the last 15 days |
 
-`radar.py` does all the number work. Claude only reads the news.
+`radar.py` does all the number work. Claude only reads the news. It needs no packages: S3 is reached with the Python standard library, and the AWS key is passed to each command (never saved to a file).
 
 ## Fundamentals tables
 
@@ -69,7 +69,6 @@ New season: change `season` in `config/settings.json`. Data goes to a new S3 fol
 ## Local testing
 
 ```
-pip install boto3
 python3 radar.py morning,check,log --task test --local ./store   # writes to ./store instead of S3
 python3 radar.py evening --local ./store
 ```

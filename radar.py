@@ -12,7 +12,8 @@ Storage: S3, s3://<bucket>/<prefix>/<season>/ (see config/settings.json)
   csv/*.csv     events, prices, reasons, summaries, fundamentals, outlook, run_log (flat tables)
   snapshots/<YYYY-MM-DD>/   copy of all of the above as it stood after that day's last run
 On the first run of a season, events start from seed/<season>_events.json.
-Credentials come from the usual AWS environment variables.
+Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY set for the command (or ~/.aws/credentials).
+No packages to install: S3 is reached with the standard library.
 
 Commands (chain with commas, e.g. morning,check,log)
   morning  [--date D] [--since D]   add today's (and weekend/holiday) reporters
@@ -151,19 +152,96 @@ def read_repo_json(*parts):
 def _real_key_id(v):
     return bool(v) and len(v) == 20 and v[:4] in ("AKIA", "ASIA") and v.isalnum()
 
-def aws_session(region="ap-south-1"):
-    """boto3 session that ignores placeholder AWS_* variables.
+def aws_credentials():
+    """(key id, secret, session token, where from). Environment first, then ~/.aws/credentials.
 
     Some sandboxes set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY to a placeholder
-    (e.g. "proxy-redacted"). boto3 prefers environment variables over
-    ~/.aws/credentials, so the placeholder would be sent to AWS and rejected as
-    InvalidAccessKeyId. Drop them when they are not a real key id.
+    (e.g. "proxy-redacted"); those are ignored because they are not a real key id.
     """
-    import boto3
-    if not _real_key_id(os.environ.get("AWS_ACCESS_KEY_ID", "")):
-        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
-            os.environ.pop(k, None)
-    return boto3.session.Session(region_name=region)
+    kid = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    if _real_key_id(kid) and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        return kid, os.environ["AWS_SECRET_ACCESS_KEY"].strip(), os.environ.get("AWS_SESSION_TOKEN") or None, "environment"
+    import configparser
+    p = os.path.expanduser("~/.aws/credentials")
+    if os.path.exists(p):
+        c = configparser.ConfigParser(); c.read(p)
+        sec = c[os.environ.get("AWS_PROFILE", "default")] if c.has_section(os.environ.get("AWS_PROFILE", "default")) else None
+        if sec and _real_key_id(sec.get("aws_access_key_id", "").strip()):
+            return (sec["aws_access_key_id"].strip(), sec.get("aws_secret_access_key", "").strip(),
+                    sec.get("aws_session_token") or None, p)
+    return None
+
+class S3Error(RuntimeError):
+    def __init__(self, status, code, msg):
+        super().__init__(f"S3 {status} {code}: {msg}"); self.status, self.code = status, code
+
+class S3Lite:
+    """Minimal S3 client (GET, PUT, list folders) using only the Python standard library (AWS Signature V4).
+    No packages to install."""
+    def __init__(self, bucket, region):
+        cred = aws_credentials()
+        if not cred:
+            raise RuntimeError("No AWS key found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the command.")
+        self.kid, self.secret, self.token, self.source = cred
+        self.bucket, self.region = bucket, region
+        self.host = f"{bucket}.s3.{region}.amazonaws.com"
+
+    def _sign(self, key, msg):
+        import hmac, hashlib
+        return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+    def request(self, method, key="", query=None, body=b"", ctype=None):
+        import hashlib, urllib.parse
+        t = dt.datetime.now(dt.timezone.utc)
+        amz, day = t.strftime("%Y%m%dT%H%M%SZ"), t.strftime("%Y%m%d")
+        uri = "/" + urllib.parse.quote(key, safe="/-_.~")
+        q = "&".join(f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(str(v), safe='-_.~')}"
+                     for k, v in sorted((query or {}).items()))
+        h = {"host": self.host, "x-amz-content-sha256": hashlib.sha256(body).hexdigest(), "x-amz-date": amz}
+        if self.token: h["x-amz-security-token"] = self.token
+        if ctype: h["content-type"] = ctype
+        names = sorted(h)
+        creq = "\n".join([method, uri, q, "".join(f"{n}:{h[n]}\n" for n in names), ";".join(names),
+                          h["x-amz-content-sha256"]])
+        scope = f"{day}/{self.region}/s3/aws4_request"
+        sts = "\n".join(["AWS4-HMAC-SHA256", amz, scope, hashlib.sha256(creq.encode()).hexdigest()])
+        k = self._sign(("AWS4" + self.secret).encode(), day)
+        for part in (self.region, "s3", "aws4_request"): k = self._sign(k, part)
+        import hmac
+        sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+        h["Authorization"] = (f"AWS4-HMAC-SHA256 Credential={self.kid}/{scope}, "
+                              f"SignedHeaders={';'.join(names)}, Signature={sig}")
+        url = f"https://{self.host}{uri}" + (f"?{q}" if q else "")
+        req = urllib.request.Request(url, data=body if method == "PUT" else None, method=method,
+                                     headers={k2: v for k2, v in h.items() if k2 != "host"})
+        last = None
+        for i in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return r.status, r.read()
+            except urllib.error.HTTPError as e:
+                txt = e.read().decode("utf-8", "replace")
+                code = (re.search(r"<Code>(.*?)</Code>", txt) or [None, "Error"])[1]
+                msg = (re.search(r"<Message>(.*?)</Message>", txt) or [None, txt[:200]])[1]
+                if e.code >= 500: last = S3Error(e.code, code, msg); time.sleep(2 + 3 * i); continue
+                raise S3Error(e.code, code, msg)
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                last = e; time.sleep(2 + 3 * i)
+        raise RuntimeError(f"S3 {method} {key} failed: {last}")
+
+    def get(self, key):
+        try:
+            return self.request("GET", key)[1]
+        except S3Error as e:
+            if e.code == "NoSuchKey" or e.status == 404: return None
+            raise
+
+    def put(self, key, body, ctype):
+        self.request("PUT", key, body=body, ctype=ctype)
+
+    def folders(self, prefix):
+        b = self.request("GET", "", {"list-type": "2", "prefix": prefix, "delimiter": "/"})[1].decode("utf-8")
+        return re.findall(r"<CommonPrefixes><Prefix>(.*?)</Prefix></CommonPrefixes>", b)
 
 class Store:
     """Loads the season's state once, lets commands change it, saves it once."""
@@ -192,7 +270,7 @@ class Store:
 
     def s3(self):
         if self._s3 is None:
-            self._s3 = aws_session(self.region).client("s3")
+            self._s3 = S3Lite(self.bucket, self.region)
         return self._s3
 
     def _read_json(self, name, prefix=None):
@@ -201,11 +279,8 @@ class Store:
             p = os.path.join(self.local, prefix, name)
             if not os.path.exists(p): return None
             with open(p, encoding="utf-8") as f: return json.load(f)
-        try:
-            obj = self.s3().get_object(Bucket=self.bucket, Key=f"{prefix}/{name}")
-        except self.s3().exceptions.NoSuchKey:
-            return None
-        return json.loads(obj["Body"].read())
+        b = self.s3().get(f"{prefix}/{name}")
+        return json.loads(b) if b is not None else None
 
     def _write(self, name, text, ctype, prefix=None):
         prefix = prefix or self.prefix
@@ -214,8 +289,7 @@ class Store:
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f: f.write(text)
             return
-        self.s3().put_object(Bucket=self.bucket, Key=f"{prefix}/{name}",
-                             Body=text.encode("utf-8"), ContentType=ctype)
+        self.s3().put(f"{prefix}/{name}", text.encode("utf-8"), ctype)
 
     def season_prefix(self, sc):
         return f"{self.cfg.get('storage', {}).get('prefix', 'earnings-radar')}/{sc}"
@@ -229,8 +303,7 @@ class Store:
                 d = os.path.join(self.local, root)
                 found |= {x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x))} if os.path.isdir(d) else set()
             else:
-                r = self.s3().list_objects_v2(Bucket=self.bucket, Prefix=f"{root}/", Delimiter="/")
-                found |= {c["Prefix"][len(root) + 1:].strip("/") for c in r.get("CommonPrefixes") or []}
+                found |= {x[len(root) + 1:].strip("/") for x in self.s3().folders(f"{root}/")}
         except Exception as ex:
             print(f"Could not list season folders ({ex}); using track_seasons only.")
         found.discard(self.sc)
@@ -898,29 +971,17 @@ def cmd_log(db, args, auto_status="ok", auto_notes=""):
 
 # ---------------------------------------------------------------- selftest
 def selftest(args):
-    """Show which AWS credentials boto3 actually uses (never the secret) and test them."""
+    """Show which AWS key the script uses (never the secret) and test reading S3."""
     print("AWS_* environment variables set:", sorted(k for k in os.environ if k.startswith("AWS_")) or "none")
     print("placeholder key in environment (ignored):",
           bool(os.environ.get("AWS_ACCESS_KEY_ID")) and not _real_key_id(os.environ.get("AWS_ACCESS_KEY_ID")))
-    for p in ("~/.aws/credentials", "~/.aws/config"):
-        p = os.path.expanduser(p)
-        print(f"{p}: {'exists' if os.path.exists(p) else 'missing'}")
-    s = aws_session()
-    c = s.get_credentials()
+    c = aws_credentials()
     if not c:
-        print("boto3 found NO credentials"); return
-    f = c.get_frozen_credentials()
-    kid, sec = f.access_key or "", f.secret_key or ""
-    print(f"credential source: {c.method}")
-    print(f"key id: {kid[:4]}…{kid[-4:]}  length {len(kid)} (should be 20)  "
-          f"clean: {kid == kid.strip() and kid.isalnum()}")
-    print(f"secret: length {len(sec)} (should be 40)  surrounding spaces: {sec != sec.strip()}  "
-          f"token present: {bool(f.token)}")
-    print(f"region: {s.region_name}")
-    try:
-        print("STS identity:", s.client("sts").get_caller_identity()["Arn"].split(":")[-1])
-    except Exception as e:
-        print("STS error:", getattr(e, "response", {}).get("Error", {}).get("Code", type(e).__name__), "-", e)
+        print("NO AWS key found (environment or ~/.aws/credentials)"); return
+    kid, sec, tok, src = c
+    print(f"key from: {src}")
+    print(f"key id: {kid[:4]}…{kid[-4:]}  length {len(kid)} (should be 20)")
+    print(f"secret: length {len(sec)} (should be 40)  token present: {bool(tok)}")
     try:
         st = Store(args.out, None)
         print(f"S3 read OK: {st.where()} ({len(st.events)} events)")

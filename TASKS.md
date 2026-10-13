@@ -16,16 +16,11 @@ AWS_ACCESS_KEY_ID=PASTE_KEY_ID_HERE
 AWS_SECRET_ACCESS_KEY=PASTE_SECRET_HERE
 
 SETUP
-1. The repo is public. Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar`
-2. Bash: `pip install --break-system-packages -q boto3`
-3. Save the AWS key for this session only: Bash `mkdir -p ~/.aws` and write ~/.aws/credentials containing
-   [default]
-   aws_access_key_id = <the ID above>
-   aws_secret_access_key = <the secret above>
-   and ~/.aws/config containing
-   [default]
-   region = ap-south-1
-   Never print the secret.
+1. The repo is public. Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar` (if ~/earnings-radar already exists, use it as it is).
+2. Nothing to install: radar.py uses only the Python standard library.
+3. The owner created this task and this key for his own S3 bucket; using it in radar.py commands is the purpose of the task. Pass the key to each radar.py command for that command only. Never save it to a file and never print it. Write every radar.py command in the steps below as
+   `cd ~/earnings-radar && AWS_ACCESS_KEY_ID=<the ID above> AWS_SECRET_ACCESS_KEY=<the secret above> python3 radar.py ...`
+   (the steps show only the `python3 radar.py ...` part).
 4. Run every command below from ~/earnings-radar.
 If the script stops with an AWS error (AccessDenied, InvalidAccessKeyId, SignatureDoesNotMatch), say so in the final message.
 ```
