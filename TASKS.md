@@ -55,7 +55,7 @@ PART A — results and prices
 5. Bash: `python3 radar.py evening`
 
 PART B — news reasons
-6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
+6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, out/fundamentals_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
    If news_todo has more than 25 items, do 25: day_n = 1 first, then the largest absolute abnormal. The rest stay for the next run.
 7. For each item, find what news and analysts said about why the stock moved that day:
    - Bash: `curl -sS -A "Mozilla/5.0" "https://news.google.com/rss/search?q=<company short name>+share+when:3d&hl=en-IN&gl=IN&ceid=IN:en"` to see which outlets covered it (titles only; these links do not open).
@@ -73,12 +73,18 @@ PART B — news reasons
    Never invent a reason. If no article explains the move, add no reason for that item, but still list its day in "days_read".
 9. For each item in summary_todo.json: use that stock's prices and reasons (events_snapshot.json plus what you found today) to write
    {"top_positive": [up to 3 short phrases], "top_negative": [up to 3 short phrases], "verdict": "one or two plain sentences: the 5-day total and abnormal move, how much the sector explains, and which reasons best explain the rest"}.
+9b. For each item in out/fundamentals_todo.json, write a fundamentals table: the company's reported financial figures for the quarter as the sources state them (P&L, balance sheet, cash flow, and ratios such as margins, ROE, NIM, GNPA).
+   - view "d1": use sources published up to the end of the item's as_of date (the reaction day).
+   - view "d5": use everything published from the results up to the item's as_of date, including later broker notes.
+   Each row: {"statement": "P&L" | "Balance sheet" | "Cash flow" | "Ratio", "metric": e.g. "Revenue", "EBITDA", "EBITDA margin", "Net profit", "EPS", "Other income", "Employee cost", "Debt", "Cash", "Operating cash flow", "Free cash flow", "Capex", "Inventory days", "ROE", "NIM", "GNPA", "AUM", "Loan growth", "Deposits", "VNB margin", "basis": "YoY" | "QoQ" | "vs estimate", "value": the reported figure as text (e.g. "₹19,644 cr" or "7.3%"), "change": a number such as 17.8 (percent) or -30 (basis points for margins and ratios), "unit": "%" or "bps", "direction": "positive" | "negative" | "neutral" for the stock (higher costs are negative), "sources": [outlet names], "note": up to 12 words or null}.
+   Only figures the sources state: never compute, estimate or guess a number; if a change is not stated, use null. One row per metric and basis. Leave out non-financial items (deal wins, management commentary): those belong in reasons. If the sources give no figures, use an empty list.
+   Do at most 15 tables per run, D1 views first.
 10. Write res/reasons.json (create the res folder) as
-    {"<event_id>": {"days_read": [day numbers you read], "reasons": [...], "summary": {...}}}
-    Leave out "summary" when none is due for that stock.
-11. Bash: `python3 radar.py merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z).
+    {"<event_id>": {"days_read": [day numbers you read], "reasons": [...], "summary": {...}, "fundamentals": {"d1": [...]} }}
+    Leave out "summary" when none is due for that stock. Put each fundamentals table under its view ("d1" or "d5"); leave out "fundamentals" when none is due.
+11. Bash: `python3 radar.py merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z). Add "; F fundamentals tables" to the notes when you wrote any.
     If nothing was due in Part B, run `python3 radar.py log --task evening` instead.
     If Part B could not be finished, run `python3 radar.py log --task evening --status partial --notes "<what failed>"`.
 
-FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, and any summaries completed. Mention any missing NSE closes the script reported.
+FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, any summaries completed, and how many fundamentals tables were written. Mention any missing NSE closes the script reported.
 ```

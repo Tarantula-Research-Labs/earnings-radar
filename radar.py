@@ -252,7 +252,7 @@ class Store:
             self._write(f"{snap}/csv/{name}.csv", text, "text/csv")
         n_ev = sum(1 for k in self.changed if k.startswith("events/"))
         print(f"\nSaved to {self.where()}: events.json ({len(self.events)} events, {n_ev} changed), "
-              f"runs.json, csv/ (5 files), and a copy in {snap}/.")
+              f"runs.json, csv/ ({len(csvs)} files), and a copy in {snap}/.")
 
 def _csv(rows, cols):
     buf = io.StringIO(); w = csv.writer(buf)
@@ -279,6 +279,14 @@ def export_csvs(events, runs):
                            "top_positive", "top_negative", "verdict", "created_at"]),
         "run_log": _csv([dict(r, date=d) for d, doc in sorted(runs.items()) for r in doc.get("runs", [])],
                         ["date", "task", "started_at", "finished_at", "status", "notes"]),
+        "fundamentals": _csv([dict(row, event_id=e["event_id"], symbol=e["symbol"], company=e.get("company"),
+                                   sector_index=e.get("sector_index"), results_filed_at=e.get("results_filed_at"),
+                                   view=view.upper(), as_of=blk.get("as_of"), recorded_at=blk.get("recorded_at"))
+                              for e in ev for view, blk in sorted((e.get("fundamentals") or {}).items())
+                              for row in blk.get("rows") or []],
+                             ["event_id", "symbol", "company", "sector_index", "results_filed_at", "view", "as_of",
+                              "statement", "metric", "basis", "value", "change", "unit", "direction", "sources", "note",
+                              "recorded_at"]),
     }
 
 def load_ctx(db):
@@ -439,16 +447,31 @@ def cmd_evening(db, args):
         if e["day_count"] >= NEWS_DAYS and not e.get("summary"):
             summaries.append({"event_id": eid, "symbol": sym, "cum_log_return": e["cum_log_return"],
                               "cum_abnormal": e["cum_abnormal"], "reasons_so_far": len(e.get("reasons") or [])})
+    # Fundamentals tables still to write: Day 1 view once D1 is priced, Day 5 view once D5 is priced.
+    # Built from every event (including done ones), so a missed table is picked up on a later run.
+    fund = []
+    for eid, e in sorted(db.all("events").items()):
+        fv = e.get("fundamentals") or {}
+        p = {x.get("day_n"): x for x in e.get("prices") or []}
+        base = {"event_id": eid, "symbol": e.get("symbol"), "company": e.get("company"),
+                "results_filed_at": e.get("results_filed_at"), "reaction_day": e.get("reaction_day")}
+        if (e.get("day_count") or 0) >= 1 and "d1" not in fv and 1 in p:
+            fund.append(dict(base, view="d1", as_of=p[1]["date"]))
+        if (e.get("day_count") or 0) >= NEWS_DAYS and "d5" not in fv and NEWS_DAYS in p:
+            fund.append(dict(base, view="d5", as_of=p[NEWS_DAYS]["date"]))
     os.makedirs(db.out, exist_ok=True)
     with open(os.path.join(db.out, "news_todo.json"), "w") as f: json.dump(news, f, indent=1)
     with open(os.path.join(db.out, "summary_todo.json"), "w") as f: json.dump(summaries, f, indent=1)
+    with open(os.path.join(db.out, "fundamentals_todo.json"), "w") as f: json.dump(fund, f, indent=1)
+    print(f"Fundamentals tables due: {len(fund)} -> {db.out}/fundamentals_todo.json"
+          + (" (" + ", ".join(f"{x['symbol']} {x['view'].upper()}" for x in fund) + ")" if fund else ""))
     print(f"Prices updated for {sum(1 for k in db.changed if k.startswith('events/'))} stock(s).")
     if gaps: print("Missing NSE close (not published yet or symbol absent): " + "; ".join(gaps))
     print(f"News to read: {len(news)} stock-day(s) -> {db.out}/news_todo.json")
     for n in news:
         print(f"  {n['symbol']:<12} D{n['day_n']} {n['date']}  stock {fmt(n['log_return'])}  abnormal {fmt(n['abnormal'])}")
     print(f"5-day summaries due: {len(summaries)} -> {db.out}/summary_todo.json")
-    res.update({"news": len(news), "summaries": len(summaries), "gaps": gaps})
+    res.update({"news": len(news), "summaries": len(summaries), "fundamentals": len(fund), "gaps": gaps})
     return res
 
 def fmt(v): return "—" if v is None else f"{v*100:+.2f}%"
@@ -479,6 +502,38 @@ def norm_time(v):
     if t > now_ist() + dt.timedelta(hours=1): return None  # a future time is a parsing mistake
     return t.isoformat(timespec="seconds")
 
+STATEMENTS = {"p&l": "P&L", "pnl": "P&L", "profit and loss": "P&L", "income statement": "P&L",
+              "balance sheet": "Balance sheet", "cash flow": "Cash flow", "ratio": "Ratio", "kpi": "Ratio"}
+FDIRS = {"positive", "negative", "neutral"}
+
+def _num(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v): return round(float(v), 2)
+    if isinstance(v, str):
+        try: return round(float(v.replace("%", "").replace("bps", "").replace(",", "").replace("+", "").strip()), 2)
+        except ValueError: return None
+    return None
+
+def clean_fund_rows(rows):
+    """Validate one fundamentals table (rows the Evening task wrote from news/broker sources)."""
+    out, seen = [], set()
+    for r in rows or []:
+        if not isinstance(r, dict): continue
+        metric = str(r.get("metric") or "").strip()[:60]
+        if not metric: continue
+        st = STATEMENTS.get(str(r.get("statement") or "").strip().lower(), "Ratio")
+        unit = ("bps" if str(r.get("unit") or "").strip().lower() == "bps" else "%") if _num(r.get("change")) is not None else None
+        row = {"statement": st, "metric": metric,
+               "basis": str(r.get("basis") or "").strip()[:20] or None,
+               "value": str(r.get("value") or "").strip()[:40] or None,
+               "change": _num(r.get("change")), "unit": unit,
+               "direction": r.get("direction") if r.get("direction") in FDIRS else "neutral",
+               "sources": [str(s)[:40] for s in (r.get("sources") or []) if s][:5],
+               "note": str(r.get("note") or "").strip()[:120] or None}
+        key = (st, metric.lower(), row["basis"])
+        if key in seen: continue
+        seen.add(key); out.append(row)
+    return out[:25]
+
 def cmd_merge(db, args):
     with open(args.file, encoding="utf-8") as f: inp = json.load(f)
     events = db.all("events")
@@ -505,6 +560,16 @@ def cmd_merge(db, args):
         days |= {int(r["day_n"]) for r in payload.get("reasons") or [] if r.get("day_n") is not None}
         if days:
             e["news_done"] = sorted(set(e.get("news_done") or []) | days)
+        # Fundamentals tables: {"d1": [rows], "d5": [rows]}. An empty list is kept on purpose
+        # (sources gave no figures) so the table is not asked for again.
+        fsaved = []
+        for view, rows in (payload.get("fundamentals") or {}).items():
+            view = str(view).lower()
+            if view not in ("d1", "d5") or not isinstance(rows, list): continue
+            day = 1 if view == "d1" else NEWS_DAYS
+            as_of = next((p.get("date") for p in e.get("prices") or [] if p.get("day_n") == day), None)
+            e.setdefault("fundamentals", {})[view] = {"rows": clean_fund_rows(rows), "as_of": as_of, "recorded_at": captured}
+            fsaved.append(f"{view.upper()} {len(e['fundamentals'][view]['rows'])} rows")
         if payload.get("summary"):
             s = payload["summary"]
             d1 = [p for p in e.get("prices") or [] if p.get("day_n", 0) >= 1]
@@ -515,7 +580,9 @@ def cmd_merge(db, args):
                             "verdict": str(s.get("verdict") or "")[:600], "created_at": stamp()}
             e["status"] = "done"
         e["updated_at"] = stamp()
-        db.put("events", eid, e); done.append(f"{e['symbol']} +{add} reason(s){' + summary' if payload.get('summary') else ''}")
+        db.put("events", eid, e)
+        done.append(f"{e['symbol']} +{add} reason(s)" + (f", fundamentals {', '.join(fsaved)}" if fsaved else "")
+                    + (" + summary" if payload.get("summary") else ""))
     print("Merged: " + ("; ".join(done) or "nothing"))
     return {"merged": len(done)}
 

@@ -16,6 +16,10 @@ Three Claude scheduled tasks (weekdays, IST) — prompts in [TASKS.md](TASKS.md)
 
 `radar.py` does all the number work. Claude only reads the news.
 
+## Fundamentals tables
+
+For each stock the Evening run also writes two tables of reported figures (P&L, balance sheet, cash flow, ratios) as the news and broker sources state them: a **Day 1 view** (sources up to the reaction day) and a **Day 5 view** (everything up to day 5). Each row: statement, metric, basis (YoY/QoQ/vs estimate), value, change (% or bps), direction for the stock, sources. Only figures the sources state are recorded. They are stored under `fundamentals` in `events.json` and in `csv/fundamentals.csv`.
+
 ## Rules
 
 - Results filed before 15:30 IST on a trading day → that day is the reaction day (D1). Later, or on a non-trading day → next trading day.
@@ -31,7 +35,7 @@ Three Claude scheduled tasks (weekdays, IST) — prompts in [TASKS.md](TASKS.md)
 |---|---|
 | `events.json` | Every stock-quarter: filing time, reaction day, prices, reasons, summary |
 | `runs.json` | Run log by date |
-| `csv/events.csv`, `prices.csv`, `reasons.csv`, `summaries.csv`, `run_log.csv` | The same data as flat tables, ready for Postgres |
+| `csv/events.csv`, `prices.csv`, `reasons.csv`, `summaries.csv`, `run_log.csv`, `fundamentals.csv` | The same data as flat tables, ready for Postgres |
 | `snapshots/<YYYY-MM-DD>/` | Copy of all of the above as it stood after that day's last run |
 
 The first run of a season starts from `seed/<season>_events.json` if S3 has nothing yet.
