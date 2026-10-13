@@ -273,7 +273,7 @@ def export_csvs(events, runs):
                         "sector_log_return", "nifty_log_return", "abnormal", "source", "note"]),
         "reasons": _csv([dict(r, event_id=e["event_id"], symbol=e["symbol"]) for e in ev for r in e.get("reasons") or []],
                         ["event_id", "symbol", "day_n", "date", "direction", "category", "reason", "source", "url",
-                         "matches_numbers"]),
+                         "matches_numbers", "published_at", "captured_at"]),
         "summaries": _csv([dict(e["summary"], event_id=e["event_id"], symbol=e["symbol"]) for e in ev if e.get("summary")],
                           ["event_id", "symbol", "cum_log_return", "cum_abnormal", "cum_sector_return",
                            "top_positive", "top_negative", "verdict", "created_at"]),
@@ -458,9 +458,31 @@ CATS = {"results", "margins", "guidance", "brokerage", "sector", "macro", "deals
 DIRS = {"positive", "negative", "mixed"}
 CHECKS = {"yes", "no", "partly", "unchecked"}
 
+def norm_time(v):
+    """Article publish time -> ISO 8601 in IST, or None if missing/unreadable.
+    Accepts ISO 8601 (with or without Z/offset) and RFC 2822 (RSS pubDate).
+    A time without a zone is taken as IST."""
+    if not v or not isinstance(v, str): return None
+    v = v.strip()
+    t = None
+    try:
+        t = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            t = parsedate_to_datetime(v)
+        except (TypeError, ValueError, IndexError):
+            return None
+    if t is None: return None
+    if t.tzinfo is None: t = t.replace(tzinfo=IST)
+    t = t.astimezone(IST)
+    if t > now_ist() + dt.timedelta(hours=1): return None  # a future time is a parsing mistake
+    return t.isoformat(timespec="seconds")
+
 def cmd_merge(db, args):
     with open(args.file, encoding="utf-8") as f: inp = json.load(f)
     events = db.all("events")
+    captured = stamp()  # when this run recorded the reasons
     done = []
     for eid, payload in inp.items():
         e = events.get(eid)
@@ -468,7 +490,10 @@ def cmd_merge(db, args):
         have = {(r.get("url"), r.get("reason")) for r in e.get("reasons") or []}
         add = 0
         for r in payload.get("reasons") or []:
-            r = {k: r.get(k) for k in ("day_n", "date", "direction", "category", "reason", "source", "url", "matches_numbers")}
+            r = {k: r.get(k) for k in ("day_n", "date", "direction", "category", "reason", "source", "url", "matches_numbers",
+                                       "published_at")}
+            r["published_at"] = norm_time(r.get("published_at"))
+            r["captured_at"] = captured
             r["direction"] = r["direction"] if r["direction"] in DIRS else "mixed"
             r["category"] = r["category"] if r["category"] in CATS else "other"
             r["matches_numbers"] = r["matches_numbers"] if r["matches_numbers"] in CHECKS else "unchecked"

@@ -61,13 +61,14 @@ PART B — news reasons
    - Bash: `curl -sS -A "Mozilla/5.0" "https://news.google.com/rss/search?q=<company short name>+share+when:3d&hl=en-IN&gl=IN&ceid=IN:en"` to see which outlets covered it (titles only; these links do not open).
    - WebSearch for the real articles, e.g. "<company> share price <date> Q2 results". Prefer Moneycontrol, Economic Times, Upstox, Business Standard, Livemint, NDTV Profit, CNBC-TV18 and brokerage notes.
    - Read 2 to 4 articles. Moneycontrol, Economic Times and Upstox load with Bash `curl -sS -A "Mozilla/5.0" URL` plus BeautifulSoup (`pip install --break-system-packages -q beautifulsoup4 lxml`). Use WebFetch for the others.
-   - Use only articles about this company published after its results were filed (results_filed_at in the item).
+   - Use only articles about this company published after its results were filed (results_filed_at in the item). Check this with the article's publish time.
    For day 2 to day 5, only add reasons that are new that day (a brokerage note, a follow-up story).
 8. Turn what you read into reasons. Each reason:
    - "reason": one plain sentence, at most 25 words, in your own words. Never copy sentences from the article.
    - "direction": "positive", "negative" or "mixed" (its effect on the stock).
    - "category": one of results, margins, guidance, brokerage, sector, macro, deals, management, valuation, other.
    - "source": the outlet's name. "url": the article link. "day_n" and "date": from the item.
+   - "published_at": when the article was published, copied exactly as the page or feed states it (ISO 8601 like 2026-10-12T09:42:00+05:30, or the RSS pubDate text). Look in the page's meta tag article:published_time, its JSON-LD "datePublished", or the Google News feed's <pubDate> for that article. If none of these gives a time, use null. Never guess or estimate it. (The script adds "captured_at" by itself.)
    - "matches_numbers": "yes" if the figures the reason relies on agree with the company's reported results and with the actual move in the item (log_return, abnormal); "no" if they disagree (e.g. the article says the stock fell but log_return is positive); "partly" if some agree; "unchecked" if the reason has no figures to check.
    Never invent a reason. If no article explains the move, add no reason for that item, but still list its day in "days_read".
 9. For each item in summary_todo.json: use that stock's prices and reasons (events_snapshot.json plus what you found today) to write
