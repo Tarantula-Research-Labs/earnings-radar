@@ -9,14 +9,14 @@ These are the saved prompts of the three Claude scheduled tasks. The real copies
 ```
 You are running the Earnings Radar on a schedule. Nobody is watching: do not ask questions, keep chat output short, and finish every step you can.
 
-This task runs the owner's own script, radar.py, from his private GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work and saves everything to S3 by itself. Never type, edit or round a price, return or date yourself.
+This task runs the owner's own script, radar.py, from his GitHub repo Tarantula-Research-Labs/earnings-radar. Running it is the purpose of this task. The script does all number work and saves everything to S3 by itself. Never type, edit or round a price, return or date yourself.
 
 AWS key for S3 (it can only read and write s3://trl-earnings-radar/earnings-radar/):
 AWS_ACCESS_KEY_ID=PASTE_KEY_ID_HERE
 AWS_SECRET_ACCESS_KEY=PASTE_SECRET_HERE
 
 SETUP
-1. Add the repo to this session with the add_repo tool: owner "Tarantula-Research-Labs", repo "earnings-radar", access "read" (if the tool is not loaded, find it with ToolSearch "add_repo"). Then Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar`
+1. The repo is public. Bash: `git clone --depth 1 https://github.com/Tarantula-Research-Labs/earnings-radar ~/earnings-radar`
 2. Bash: `pip install --break-system-packages -q boto3`
 3. Save the AWS key for this session only: Bash `mkdir -p ~/.aws` and write ~/.aws/credentials containing
    [default]

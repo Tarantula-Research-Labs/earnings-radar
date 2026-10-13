@@ -145,6 +145,23 @@ def read_repo_json(*parts):
     with open(os.path.join(REPO, *parts), encoding="utf-8") as f:
         return json.load(f)
 
+def _real_key_id(v):
+    return bool(v) and len(v) == 20 and v[:4] in ("AKIA", "ASIA") and v.isalnum()
+
+def aws_session(region="ap-south-1"):
+    """boto3 session that ignores placeholder AWS_* variables.
+
+    Some sandboxes set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY to a placeholder
+    (e.g. "proxy-redacted"). boto3 prefers environment variables over
+    ~/.aws/credentials, so the placeholder would be sent to AWS and rejected as
+    InvalidAccessKeyId. Drop them when they are not a real key id.
+    """
+    import boto3
+    if not _real_key_id(os.environ.get("AWS_ACCESS_KEY_ID", "")):
+        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            os.environ.pop(k, None)
+    return boto3.session.Session(region_name=region)
+
 class Store:
     """Loads the season's state once, lets commands change it, saves it once."""
     def __init__(self, out, local=None):
@@ -172,8 +189,7 @@ class Store:
 
     def s3(self):
         if self._s3 is None:
-            import boto3
-            self._s3 = boto3.client("s3", region_name=self.region)
+            self._s3 = aws_session(self.region).client("s3")
         return self._s3
 
     def _read_json(self, name):
@@ -480,6 +496,37 @@ def cmd_log(db, args, auto_status="ok", auto_notes=""):
     db.put("runs", today, doc)
     print(f"Run log: {args.task} {status} — {notes[:200]}")
 
+# ---------------------------------------------------------------- selftest
+def selftest(args):
+    """Show which AWS credentials boto3 actually uses (never the secret) and test them."""
+    print("AWS_* environment variables set:", sorted(k for k in os.environ if k.startswith("AWS_")) or "none")
+    print("placeholder key in environment (ignored):",
+          bool(os.environ.get("AWS_ACCESS_KEY_ID")) and not _real_key_id(os.environ.get("AWS_ACCESS_KEY_ID")))
+    for p in ("~/.aws/credentials", "~/.aws/config"):
+        p = os.path.expanduser(p)
+        print(f"{p}: {'exists' if os.path.exists(p) else 'missing'}")
+    s = aws_session()
+    c = s.get_credentials()
+    if not c:
+        print("boto3 found NO credentials"); return
+    f = c.get_frozen_credentials()
+    kid, sec = f.access_key or "", f.secret_key or ""
+    print(f"credential source: {c.method}")
+    print(f"key id: {kid[:4]}…{kid[-4:]}  length {len(kid)} (should be 20)  "
+          f"clean: {kid == kid.strip() and kid.isalnum()}")
+    print(f"secret: length {len(sec)} (should be 40)  surrounding spaces: {sec != sec.strip()}  "
+          f"token present: {bool(f.token)}")
+    print(f"region: {s.region_name}")
+    try:
+        print("STS identity:", s.client("sts").get_caller_identity()["Arn"].split(":")[-1])
+    except Exception as e:
+        print("STS error:", getattr(e, "response", {}).get("Error", {}).get("Code", type(e).__name__), "-", e)
+    try:
+        st = Store(args.out, None)
+        print(f"S3 read OK: {st.where()} ({len(st.events)} events)")
+    except Exception as e:
+        print("S3 error:", e)
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -490,6 +537,7 @@ def main():
     ap.add_argument("--task"); ap.add_argument("--status"); ap.add_argument("--notes"); ap.add_argument("--started")
     args = ap.parse_args()
     steps = [c.strip() for c in args.cmd.split(",") if c.strip()]
+    if steps == ["selftest"]: return selftest(args)
     fns = {"morning": cmd_morning, "check": cmd_check, "evening": cmd_evening, "merge": cmd_merge}
     bad = [s for s in steps if s not in fns and s != "log"]
     if bad: ap.error(f"unknown command(s): {bad}")
