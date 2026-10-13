@@ -54,7 +54,7 @@ FINAL MESSAGE (one line): which stocks filed results so far today and their reac
 PART A — results and prices
 5. Bash: `python3 radar.py evening`
 
-PART B — news reasons
+PART B — news reasons, summaries, fundamentals and outlooks
 6. Read out/news_todo.json (one item per stock per trading day whose news is not read yet), out/summary_todo.json, out/fundamentals_todo.json, and out/events_snapshot.json (all stocks with their prices and reasons so far).
    If news_todo has more than 25 items, do 25: day_n = 1 first, then the largest absolute abnormal. The rest stay for the next run.
 7. For each item, find what news and analysts said about why the stock moved that day:
@@ -79,12 +79,21 @@ PART B — news reasons
    Each row: {"statement": "P&L" | "Balance sheet" | "Cash flow" | "Ratio", "metric": e.g. "Revenue", "EBITDA", "EBITDA margin", "Net profit", "EPS", "Other income", "Employee cost", "Debt", "Cash", "Operating cash flow", "Free cash flow", "Capex", "Inventory days", "ROE", "NIM", "GNPA", "AUM", "Loan growth", "Deposits", "VNB margin", "basis": "YoY" | "QoQ" | "vs estimate", "value": the reported figure as text (e.g. "₹19,644 cr" or "7.3%"), "change": a number such as 17.8 (percent) or -30 (basis points for margins and ratios), "unit": "%" or "bps", "direction": "positive" | "negative" | "neutral" for the stock (higher costs are negative), "sources": [outlet names], "note": up to 12 words or null}.
    Only figures the sources state: never compute, estimate or guess a number; if a change is not stated, use null. One row per metric and basis. Leave out non-financial items (deal wins, management commentary): those belong in reasons. If the sources give no figures, use an empty list.
    Do at most 15 tables per run, D1 views first.
+9c. For each item in out/outlook_todo.json (at most 10 per run, in file order), write the radar's own research view of that stock from its day-5 close (as_of) until its next quarterly results (horizon_end). Build it only from evidence: the stock's reasons, fundamentals tables and summary in events_snapshot.json, plus what you read today. You may run one or two extra WebSearches per stock for management guidance and brokerage views published after the results.
+   {"stance": "positive" | "neutral" | "negative" (how you expect the stock to do against its sector index, sector_index in the item, from as_of to horizon_end; "neutral" means within about 3% of the sector either way),
+    "confidence": "low" | "medium" | "high" (use "high" rarely: only when the numbers, guidance and broker views all point the same way),
+    "thesis": "two or three plain sentences: the main reason for the stance and the figures or events it rests on",
+    "scenarios": {"bull": {"text": "one sentence: what would have to happen", "odds": whole-number percent}, "base": {...}, "bear": {...}} (the three odds add up to 100),
+    "watch": [up to 4 things to watch during the quarter, e.g. monthly volumes, a margin, order inflow],
+    "catalysts": [up to 3 events expected before horizon_end],
+    "risks": [up to 3 things that would prove the stance wrong]}
+   Rules: write in your own words; no price targets, no target returns, no buy, sell or hold wording; never invent a figure; if the evidence is thin, say so in the thesis and use confidence "low". An outlook is written once and never changed: the script scores it against the sector index every evening until horizon_end, so pick the stance the evidence supports instead of defaulting to "neutral".
 10. Write res/reasons.json (create the res folder) as
-    {"<event_id>": {"days_read": [day numbers you read], "reasons": [...], "summary": {...}, "fundamentals": {"d1": [...]} }}
-    Leave out "summary" when none is due for that stock. Put each fundamentals table under its view ("d1" or "d5"); leave out "fundamentals" when none is due.
-11. Bash: `python3 radar.py merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z). Add "; F fundamentals tables" to the notes when you wrote any.
+    {"<event_id>": {"days_read": [day numbers you read], "reasons": [...], "summary": {...}, "fundamentals": {"d1": [...]}, "outlook": {...} }}
+    Leave out "summary" when none is due for that stock. Put each fundamentals table under its view ("d1" or "d5"); leave out "fundamentals" when none is due. Leave out "outlook" unless the stock is in outlook_todo.json.
+11. Bash: `python3 radar.py merge,log res/reasons.json --task evening --notes "news read for X of Y stock-days; Z summaries"` (fill in X, Y, Z). Add "; F fundamentals tables" and "; O outlooks" to the notes when you wrote any.
     If nothing was due in Part B, run `python3 radar.py log --task evening` instead.
     If Part B could not be finished, run `python3 radar.py log --task evening --status partial --notes "<what failed>"`.
 
-FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, any summaries completed, and how many fundamentals tables were written. Mention any missing NSE closes the script reported.
+FINAL MESSAGE (two or three lines): stocks that filed after 3:20 pm, how many stock-days were priced and read, the biggest abnormal move of the day with its main reason, any summaries completed, how many fundamentals tables and outlooks were written (with each outlook's stance). Mention any missing NSE closes the script reported.
 ```

@@ -12,13 +12,27 @@ Three Claude scheduled tasks (weekdays, IST) — prompts in [TASKS.md](TASKS.md)
 |---|---|---|
 | Morning | 08:45 | Add today's reporters from the NSE event calendar |
 | Afternoon | 15:20 | Check NSE announcements for filed results |
-| Evening | 21:00 | Check again, price every tracked stock, read news, write 5-day summaries |
+| Evening | 21:00 | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
 
 `radar.py` does all the number work. Claude only reads the news.
 
 ## Fundamentals tables
 
 For each stock the Evening run also writes two tables of reported figures (P&L, balance sheet, cash flow, ratios) as the news and broker sources state them: a **Day 1 view** (sources up to the reaction day) and a **Day 5 view** (everything up to day 5). Each row: statement, metric, basis (YoY/QoQ/vs estimate), value, change (% or bps), direction for the stock, sources. Only figures the sources state are recorded. They are stored under `fundamentals` in `events.json` and in `csv/fundamentals.csv`.
+
+## Outlook to next results
+
+After day 5 the Evening run writes the radar's own research view of each stock until its next quarterly results (about 91 days after the reaction day, `horizon_end`): a **stance** against its sector index (positive / neutral / negative), a confidence, a short thesis, **bull / base / bear scenarios** with odds, and what to watch, catalysts and risks. No price targets.
+
+An outlook is written once and never changed. Every evening `radar.py` scores it: the stock's log return from the day-5 close minus its sector index's return over the same days (`excess`).
+
+| Stance | On track / right when |
+|---|---|
+| positive | excess above +2% |
+| negative | excess below −2% |
+| neutral | excess within ±3% |
+
+Between −2% and +2% a positive or negative call is "too close". At `horizon_end` the track is marked `final`. Earlier seasons' outlooks keep being scored after the season changes (the script finds every season folder in S3). Stored under `outlook` in `events.json` and in `csv/outlook.csv`. It is a model-generated research view, not investment advice.
 
 ## Rules
 
@@ -35,7 +49,7 @@ For each stock the Evening run also writes two tables of reported figures (P&L, 
 |---|---|
 | `events.json` | Every stock-quarter: filing time, reaction day, prices, reasons, summary |
 | `runs.json` | Run log by date |
-| `csv/events.csv`, `prices.csv`, `reasons.csv`, `summaries.csv`, `run_log.csv`, `fundamentals.csv` | The same data as flat tables, ready for Postgres |
+| `csv/events.csv`, `prices.csv`, `reasons.csv`, `summaries.csv`, `run_log.csv`, `fundamentals.csv`, `outlook.csv` | The same data as flat tables, ready for Postgres |
 | `snapshots/<YYYY-MM-DD>/` | Copy of all of the above as it stood after that day's last run |
 
 The first run of a season starts from `seed/<season>_events.json` if S3 has nothing yet.

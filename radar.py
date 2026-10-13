@@ -9,7 +9,7 @@ reaction day, prices and returns.
 Storage: S3, s3://<bucket>/<prefix>/<season>/ (see config/settings.json)
   events.json   every stock-quarter on the radar, with its prices and reasons
   runs.json     run log, keyed by date
-  csv/*.csv     events, prices, reasons, summaries, run_log (flat tables)
+  csv/*.csv     events, prices, reasons, summaries, fundamentals, outlook, run_log (flat tables)
   snapshots/<YYYY-MM-DD>/   copy of all of the above as it stood after that day's last run
 On the first run of a season, events start from seed/<season>_events.json.
 Credentials come from the usual AWS environment variables.
@@ -18,7 +18,7 @@ Commands (chain with commas, e.g. morning,check,log)
   morning  [--date D] [--since D]   add today's (and weekend/holiday) reporters
   check    [--now T]                look for filed results, set reaction day
   evening  [--now T]                check + prices/returns for every tracked stock
-  merge    <reasons.json>           add news reasons / 5-day summaries
+  merge    <reasons.json>           add news reasons, 5-day summaries, fundamentals, outlooks
   log      --task T [--status S] [--notes N]   add a run-log line
 
 Flags: --out DIR (todo files + local snapshot, default ./out),
@@ -193,25 +193,58 @@ class Store:
             self._s3 = aws_session(self.region).client("s3")
         return self._s3
 
-    def _read_json(self, name):
+    def _read_json(self, name, prefix=None):
+        prefix = prefix or self.prefix
         if self.local:
-            p = os.path.join(self.local, self.prefix, name)
+            p = os.path.join(self.local, prefix, name)
             if not os.path.exists(p): return None
             with open(p, encoding="utf-8") as f: return json.load(f)
         try:
-            obj = self.s3().get_object(Bucket=self.bucket, Key=f"{self.prefix}/{name}")
+            obj = self.s3().get_object(Bucket=self.bucket, Key=f"{prefix}/{name}")
         except self.s3().exceptions.NoSuchKey:
             return None
         return json.loads(obj["Body"].read())
 
-    def _write(self, name, text, ctype):
+    def _write(self, name, text, ctype, prefix=None):
+        prefix = prefix or self.prefix
         if self.local:
-            p = os.path.join(self.local, self.prefix, name)
+            p = os.path.join(self.local, prefix, name)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w", encoding="utf-8") as f: f.write(text)
             return
-        self.s3().put_object(Bucket=self.bucket, Key=f"{self.prefix}/{name}",
+        self.s3().put_object(Bucket=self.bucket, Key=f"{prefix}/{name}",
                              Body=text.encode("utf-8"), ContentType=ctype)
+
+    def season_prefix(self, sc):
+        return f"{self.cfg.get('storage', {}).get('prefix', 'earnings-radar')}/{sc}"
+
+    def other_seasons(self):
+        """Season folders in storage other than the current one (plus any listed in track_seasons)."""
+        root = self.cfg.get("storage", {}).get("prefix", "earnings-radar")
+        found = {re.sub(r"\s+", "", s) for s in self.cfg.get("track_seasons") or []}
+        try:
+            if self.local:
+                d = os.path.join(self.local, root)
+                found |= {x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x))} if os.path.isdir(d) else set()
+            else:
+                r = self.s3().list_objects_v2(Bucket=self.bucket, Prefix=f"{root}/", Delimiter="/")
+                found |= {c["Prefix"][len(root) + 1:].strip("/") for c in r.get("CommonPrefixes") or []}
+        except Exception as ex:
+            print(f"Could not list season folders ({ex}); using track_seasons only.")
+        found.discard(self.sc)
+        return sorted(x for x in found if x)
+
+    def update_old_season(self, sc, fn):
+        """Load an earlier season's events.json, let fn change it, save it back (with its CSVs) if fn returns True."""
+        pre = self.season_prefix(sc)
+        ev = self._read_json("events.json", pre)
+        if not ev: return False
+        if not fn(ev): return False
+        self._write("events.json", json.dumps(ev, ensure_ascii=False), "application/json", pre)
+        runs = self._read_json("runs.json", pre) or {}
+        for name, text in export_csvs(ev, runs).items():
+            self._write(f"csv/{name}.csv", text, "text/csv", pre)
+        return True
 
     def _snapshot(self):
         os.makedirs(self.out, exist_ok=True)
@@ -287,7 +320,26 @@ def export_csvs(events, runs):
                              ["event_id", "symbol", "company", "sector_index", "results_filed_at", "view", "as_of",
                               "statement", "metric", "basis", "value", "change", "unit", "direction", "sources", "note",
                               "recorded_at"]),
+        "outlook": _csv([_outlook_row(e) for e in ev if e.get("outlook")],
+                        ["event_id", "symbol", "company", "sector_index", "reaction_day", "written_at", "as_of",
+                         "horizon_end", "stance", "confidence", "thesis", "bull", "bull_odds", "base", "base_odds",
+                         "bear", "bear_odds", "watch", "catalysts", "risks", "from_date", "from_close", "from_sector",
+                         "last_date", "last_close", "last_sector", "stock_return", "sector_return", "excess",
+                         "track_status", "verdict"]),
     }
+
+def _outlook_row(e):
+    o = e["outlook"]; t = o.get("track") or {}; sc = o.get("scenarios") or {}
+    row = {"event_id": e["event_id"], "symbol": e.get("symbol"), "company": e.get("company"),
+           "sector_index": e.get("sector_index"), "reaction_day": e.get("reaction_day"),
+           **{k: o.get(k) for k in ("written_at", "as_of", "horizon_end", "stance", "confidence", "thesis",
+                                    "watch", "catalysts", "risks")},
+           **{k: t.get(k) for k in ("from_date", "from_close", "from_sector", "last_date", "last_close",
+                                    "last_sector", "stock_return", "sector_return", "excess", "verdict")},
+           "track_status": t.get("status")}
+    for k in ("bull", "base", "bear"):
+        row[k] = (sc.get(k) or {}).get("text"); row[f"{k}_odds"] = (sc.get(k) or {}).get("odds")
+    return row
 
 def load_ctx(db):
     cfg = db.get("config", "settings") or {}
@@ -459,7 +511,35 @@ def cmd_evening(db, args):
             fund.append(dict(base, view="d1", as_of=p[1]["date"]))
         if (e.get("day_count") or 0) >= NEWS_DAYS and "d5" not in fv and NEWS_DAYS in p:
             fund.append(dict(base, view="d5", as_of=p[NEWS_DAYS]["date"]))
+    # Outlooks still to write: every stock with day 5 priced and no outlook yet (oldest first).
+    outl = []
+    for eid, e in sorted(db.all("events").items(), key=lambda kv: (kv[1].get("reaction_day") or "", kv[0])):
+        if e.get("outlook") or (e.get("day_count") or 0) < NEWS_DAYS or not e.get("reaction_day"): continue
+        p5 = next((p for p in e.get("prices") or [] if p.get("day_n") == NEWS_DAYS), {})
+        hz = d_parse(e["reaction_day"]) + dt.timedelta(days=HORIZON_DAYS)
+        outl.append({"event_id": eid, "symbol": e.get("symbol"), "company": e.get("company"),
+                     "industry": e.get("industry"), "sector_index": e.get("sector_index"),
+                     "results_filed_at": e.get("results_filed_at"), "reaction_day": e.get("reaction_day"),
+                     "as_of": p5.get("date"), "d5_close": p5.get("close"),
+                     "cum_log_return": e.get("cum_log_return"), "cum_abnormal": e.get("cum_abnormal"),
+                     "horizon_end": d_iso(hz if is_trading_day(hz) else next_td(hz))})
+    # Track every outlook (this season, done stocks too) to its horizon.
+    tracked = update_tracks(db.all("events"), today)
+    for eid in tracked: db.put("events", eid, db.events[eid])
+    old = []
+    for sc in db.other_seasons():
+        box = {}
+        def fn(ev, box=box):
+            box["n"] = len(update_tracks(ev, today)); return box["n"] > 0
+        try:
+            db.update_old_season(sc, fn); old.append(f"{sc} {box.get('n', 0)}")
+        except Exception as ex:
+            old.append(f"{sc} failed: {ex}")
     os.makedirs(db.out, exist_ok=True)
+    with open(os.path.join(db.out, "outlook_todo.json"), "w") as f: json.dump(outl, f, indent=1)
+    print(f"Outlooks due: {len(outl)} -> {db.out}/outlook_todo.json"
+          + (" (" + ", ".join(x["symbol"] for x in outl) + ")" if outl else ""))
+    print(f"Outlook tracks updated: {len(tracked)} this season" + (f"; earlier seasons: {', '.join(old)}" if old else ""))
     with open(os.path.join(db.out, "news_todo.json"), "w") as f: json.dump(news, f, indent=1)
     with open(os.path.join(db.out, "summary_todo.json"), "w") as f: json.dump(summaries, f, indent=1)
     with open(os.path.join(db.out, "fundamentals_todo.json"), "w") as f: json.dump(fund, f, indent=1)
@@ -471,7 +551,8 @@ def cmd_evening(db, args):
     for n in news:
         print(f"  {n['symbol']:<12} D{n['day_n']} {n['date']}  stock {fmt(n['log_return'])}  abnormal {fmt(n['abnormal'])}")
     print(f"5-day summaries due: {len(summaries)} -> {db.out}/summary_todo.json")
-    res.update({"news": len(news), "summaries": len(summaries), "fundamentals": len(fund), "gaps": gaps})
+    res.update({"news": len(news), "summaries": len(summaries), "fundamentals": len(fund),
+                "outlooks_due": len(outl), "tracks": len(tracked), "gaps": gaps})
     return res
 
 def fmt(v): return "—" if v is None else f"{v*100:+.2f}%"
@@ -534,6 +615,89 @@ def clean_fund_rows(rows):
         seen.add(key); out.append(row)
     return out[:25]
 
+# ---------------------------------------------------------------- outlook (view to next quarter's results)
+# Written once per stock, after day 5, by the Evening task. Never rewritten, so the track record is honest.
+# Scored on the stock's move vs its sector index from the D5 close to the horizon (about the next results).
+STANCES = {"positive", "neutral", "negative"}
+CONFS = {"low", "medium", "high"}
+HORIZON_DAYS = 91           # calendar days after the reaction day, about one quarter
+CALL_BAND = 0.02            # positive/negative: right if excess beats the sector by more than 2%
+NEUTRAL_BAND = 0.03         # neutral: right if excess stays within ±3%
+
+def _txt(v, n): return str(v or "").strip()[:n] or None
+
+def _list(v, n=5, w=160): return [str(x).strip()[:w] for x in (v or []) if str(x or "").strip()][:n]
+
+def clean_outlook(o, e):
+    """Validate the Evening task's outlook for one stock; None if unusable."""
+    if not isinstance(o, dict): return None
+    stance = str(o.get("stance") or "").lower()
+    thesis = _txt(o.get("thesis"), 600)
+    if stance not in STANCES or not thesis: return None
+    sc, odds = {}, {}
+    for k in ("bull", "base", "bear"):
+        v = (o.get("scenarios") or {}).get(k)
+        text = v.get("text") if isinstance(v, dict) else v
+        sc[k] = {"text": _txt(text, 400), "odds": None}
+        if isinstance(v, dict) and isinstance(v.get("odds"), (int, float)) and not isinstance(v.get("odds"), bool):
+            odds[k] = v["odds"]
+    if len(odds) == 3 and all(0 <= x <= 100 for x in odds.values()) and 90 <= sum(odds.values()) <= 110:
+        for k in odds: sc[k]["odds"] = int(round(odds[k]))
+    p = {x.get("day_n"): x for x in e.get("prices") or []}
+    rd = d_parse(e["reaction_day"])
+    hz = rd + dt.timedelta(days=HORIZON_DAYS)
+    if not is_trading_day(hz): hz = next_td(hz)
+    return {"stance": stance, "confidence": o.get("confidence") if o.get("confidence") in CONFS else "low",
+            "thesis": thesis, "scenarios": sc,
+            "watch": _list(o.get("watch")), "catalysts": _list(o.get("catalysts")), "risks": _list(o.get("risks")),
+            "as_of": (p.get(NEWS_DAYS) or {}).get("date"), "horizon_end": d_iso(hz), "written_at": stamp()}
+
+def verdict_for(stance, excess):
+    if excess is None: return None
+    if stance == "neutral": return "on_track" if abs(excess) <= NEUTRAL_BAND else "off_track"
+    s = excess if stance == "positive" else -excess
+    return "on_track" if s > CALL_BAND else "off_track" if s < -CALL_BAND else "too_close"
+
+def latest_close_day(upto, floor):
+    """Latest trading day <= upto whose NSE stock and index closes are published (not before floor)."""
+    d = upto if is_trading_day(upto) else prev_td(upto)
+    for _ in range(6):
+        if d < floor: return None
+        if bhavcopy(d) and index_closes(d): return d
+        d = prev_td(d)
+    return None
+
+def update_tracks(events, today):
+    """Bring every open outlook's track up to the latest close. Returns the ids that changed."""
+    changed = []
+    for eid, e in events.items():
+        o = e.get("outlook")
+        if not o: continue
+        t = o.setdefault("track", {})
+        sym, sx = e.get("symbol"), e.get("sector_index") or "Nifty 500"
+        if not t.get("from_close"):
+            p5 = next((p for p in e.get("prices") or [] if p.get("day_n") == NEWS_DAYS), None)
+            ix = index_closes(d_parse(p5["date"])) if p5 else None
+            if not p5 or not ix or sx not in ix: continue
+            t.update({"from_date": p5["date"], "from_close": p5["close"], "from_sector": ix[sx]["close"],
+                      "status": "open"})
+            changed.append(eid)
+        if t.get("status") == "final": continue
+        hz = d_parse(o["horizon_end"])
+        d = latest_close_day(min(today, hz), d_parse(t["from_date"]))
+        if not d or (t.get("last_date") and d_iso(d) <= t["last_date"]): continue
+        bc, ix = bhavcopy(d), index_closes(d)
+        if sym not in bc or sx not in ix: continue
+        sr = lr(bc[sym]["close"], t["from_close"]); xr = lr(ix[sx]["close"], t["from_sector"])
+        ex = sr - xr if sr is not None and xr is not None else None
+        t.update({"last_date": d_iso(d), "last_close": bc[sym]["close"], "last_sector": ix[sx]["close"],
+                  "stock_return": sr, "sector_return": xr, "excess": ex,
+                  "verdict": verdict_for(o["stance"], ex), "status": "final" if d >= hz else "open",
+                  "note": "stock moved over 40% - check for split/bonus" if sr is not None and abs(sr) > 0.4 else None,
+                  "updated_at": stamp()})
+        if eid not in changed: changed.append(eid)
+    return changed
+
 def cmd_merge(db, args):
     with open(args.file, encoding="utf-8") as f: inp = json.load(f)
     events = db.all("events")
@@ -570,6 +734,19 @@ def cmd_merge(db, args):
             as_of = next((p.get("date") for p in e.get("prices") or [] if p.get("day_n") == day), None)
             e.setdefault("fundamentals", {})[view] = {"rows": clean_fund_rows(rows), "as_of": as_of, "recorded_at": captured}
             fsaved.append(f"{view.upper()} {len(e['fundamentals'][view]['rows'])} rows")
+        oadd = ""
+        if payload.get("outlook"):
+            if e.get("outlook"):
+                print(f"skip outlook for {eid}: already written {e['outlook'].get('written_at')} (outlooks are never rewritten)")
+            elif (e.get("day_count") or 0) < NEWS_DAYS or not e.get("reaction_day"):
+                print(f"skip outlook for {eid}: day 5 not priced yet")
+            else:
+                o = clean_outlook(payload["outlook"], e)
+                if o:
+                    e["outlook"] = o; oadd = f" + outlook ({o['stance']})"
+                    update_tracks({eid: e}, now_ist().date())
+                else:
+                    print(f"skip outlook for {eid}: needs stance positive/neutral/negative and a thesis")
         if payload.get("summary"):
             s = payload["summary"]
             d1 = [p for p in e.get("prices") or [] if p.get("day_n", 0) >= 1]
@@ -582,7 +759,7 @@ def cmd_merge(db, args):
         e["updated_at"] = stamp()
         db.put("events", eid, e)
         done.append(f"{e['symbol']} +{add} reason(s)" + (f", fundamentals {', '.join(fsaved)}" if fsaved else "")
-                    + (" + summary" if payload.get("summary") else ""))
+                    + (" + summary" if payload.get("summary") else "") + oadd)
     print("Merged: " + ("; ".join(done) or "nothing"))
     return {"merged": len(done)}
 
