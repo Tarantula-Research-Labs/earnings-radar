@@ -1,0 +1,23 @@
+{
+ "holidays": {
+  "ok": true,
+  "n": 20
+ },
+ "event_calendar": {
+  "ok": true,
+  "n": 124
+ },
+ "announcements": {
+  "ok": true,
+  "n": 106
+ },
+ "bhavcopy": {
+  "ok": true,
+  "n": 2927
+ },
+ "index_closes": {
+  "ok": true,
+  "n": 167
+ },
+ "when": "2026-10-30T12:24:57+05:30"
+}
