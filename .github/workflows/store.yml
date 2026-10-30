@@ -1,0 +1,43 @@
+# Saves Earnings Radar data to S3. The Claude scheduled tasks run radar.py on local files
+# and push the files they changed to the "inbox" branch (out/changed.txt lists them).
+# This workflow uploads exactly those files. Only this workflow ever sees the AWS key.
+# Secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (earnings-radar-bot, S3 only).
+name: Save to S3
+
+on:
+  push:
+    branches: [inbox]
+
+concurrency:
+  group: save-to-s3
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload changed files
+        env:
+          K: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          S: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -u
+          test -s out/changed.txt || { echo "nothing to upload"; exit 0; }
+          fail=0
+          while read -r k; do
+            [ -z "$k" ] && continue
+            case "$k" in earnings-radar/*) ;; *) echo "skip (outside earnings-radar/): $k"; continue ;; esac
+            case "$k" in *..*) echo "skip: $k"; continue ;; esac
+            [ -f "store/$k" ] || { echo "missing: $k"; fail=1; continue; }
+            case "$k" in *.csv) t=text/csv ;; *) t=application/json ;; esac
+            if curl -sS -f -o /dev/null -T "store/$k" -H "Content-Type: $t" \
+                 --aws-sigv4 "aws:amz:ap-south-1:s3" --user "$K:$S" \
+                 "https://trl-earnings-radar.s3.ap-south-1.amazonaws.com/$k"; then
+              echo "ok $k"
+            else
+              echo "FAILED $k"; fail=1
+            fi
+          done < out/changed.txt
+          exit $fail

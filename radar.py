@@ -20,6 +20,7 @@ Commands (chain with commas, e.g. morning,check,log)
   check    [--now T]                look for filed results, set reaction day
   evening  [--now T]                check + prices/returns for every tracked stock
   merge    <reasons.json>           add news reasons, 5-day summaries, fundamentals, outlooks
+  pull                              download current data from the Tremor site into ./store (no key needed)
   files                             print the S3 keys a run needs (the task downloads them into ./store)
   hypo     [--date D]               every 15 days: group the window's reporters by sector -> out/hypo_todo.json
   hyposave <hypotheses.json>        save the sector hypotheses to <prefix>/hypotheses/
@@ -1003,6 +1004,37 @@ def cmd_files():
     keys.append(f"{root}/{HYPO_DIR}/hypotheses.json")
     print("\n".join(dict.fromkeys(keys)))
 
+# ---------------------------------------------------------------- pull from the public site (no key)
+SITE = "https://tremor.tarantularesearch.com"
+
+def cmd_pull(store="store"):
+    """Download the current data from the Tremor site's public API into ./store (same layout as S3).
+    Needs no AWS key. Stops with an error rather than writing partial data."""
+    cfg = read_repo_json("config", "settings.json")
+    root = cfg.get("storage", {}).get("prefix", "earnings-radar")
+    seasons = [season_code(cfg)] + [re.sub(r"\s+", "", x) for x in cfg.get("track_seasons") or []]
+    hyp = None
+    for sc in dict.fromkeys(seasons):
+        url = f"{SITE}/api/radar?season={sc}&fresh={int(time.time())}"   # unique URL: skips the site's 60 s cache
+        b = http_get(url, accept="application/json")
+        if b is None: raise RuntimeError(f"site returned nothing for {url}")
+        d = json.loads(b)
+        if d.get("error"): raise RuntimeError(f"site error: {d['error']}")
+        if d.get("season") != sc:  # season folder does not exist yet: start fresh (seed)
+            print(f"{sc}: not on the site yet; the run will start from the seed file."); continue
+        for name in ("events", "runs"):
+            p = os.path.join(store, root, sc, f"{name}.json")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f: json.dump(d.get(name) or {}, f, ensure_ascii=False)
+        print(f"{sc}: {len(d.get('events') or {})} events, {len(d.get('runs') or {})} run-log days")
+        hyp = d.get("hypotheses") if hyp is None else hyp
+    if hyp:
+        p = os.path.join(store, root, HYPO_DIR, "hypotheses.json")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f: json.dump({"windows": hyp}, f, ensure_ascii=False)
+        print(f"hypotheses: {len(hyp)} window(s)")
+    print(f"Pulled into ./{store}. Run the commands with --local {store}; then push out/changed.txt to the inbox branch.")
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1015,6 +1047,7 @@ def main():
     steps = [c.strip() for c in args.cmd.split(",") if c.strip()]
     if steps == ["selftest"]: return selftest(args)
     if steps == ["files"]: return cmd_files()
+    if steps == ["pull"]: return cmd_pull(args.local or "store")
     if args.local:
         # The scheduled task downloads S3 files with curl before running the script (the script never holds
         # the AWS key). If any download failed for a reason other than "not there yet" (404), stop before
