@@ -6,16 +6,22 @@ For each company that reports, it records when results were filed, picks the rea
 
 ## How it runs
 
-Four Claude scheduled tasks (IST) — prompts in [TASKS.md](TASKS.md):
+GitHub Actions runs everything (`.github/workflows/radar.yml`), weekdays, IST. GitHub may start a run a few minutes late.
 
-| Task | Time | Does |
+| Run | Time | Does |
 |---|---|---|
-| Morning | 08:45 weekdays | Add today's reporters from the NSE event calendar |
-| Afternoon | 15:20 weekdays | Check NSE announcements for filed results |
-| Evening | 20:50 weekdays | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
-| Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported in the last 15 days |
+| Morning | 08:45 | Add today's reporters from the NSE event calendar |
+| Afternoon | 15:20 | Check NSE announcements for filed results |
+| Evening | 20:50 | Check again, price every tracked stock, then `agent.py` reads the news with Claude (API + web search) and writes reasons, 5-day summaries, fundamentals tables and outlooks; scores outlooks |
+| Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported since the last window |
 
-`radar.py` does all the number work. Claude only reads the news. It needs no packages (S3 is reached with the Python standard library). Each task saves the AWS key to `~/.aws/credentials` for that session. `radar.py --local DIR` plus `radar.py files` and `out/changed.txt` also let a task move files with curl instead, so the script never holds the key.
+`radar.py` does all the number work; `agent.py` only does the reading, and `radar.py merge` / `hyposave` validate its answers before saving.
+
+**Secrets** (repo Settings → Secrets and variables → Actions): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (the `earnings-radar-bot` key, S3 only) and `ANTHROPIC_API_KEY`. Optional variables: `RADAR_MODEL` (default `claude-sonnet-5-5`), `RADAR_MAX_STOCKS` (stocks read per evening, default 15).
+
+**Run by hand:** Actions tab → Earnings Radar → Run workflow (task, and `since` to backfill reporters), or push `.github/run-now.json` containing `{"task": "evening"}`.
+
+No packages are needed: S3 is reached with the Python standard library.
 
 ## Fundamentals tables
 

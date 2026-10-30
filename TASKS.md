@@ -1,3 +1,7 @@
+# Retired: Claude scheduled tasks
+
+Since 30 Oct 2026 the radar runs on GitHub Actions (see README and `.github/workflows/radar.yml`); the reading instructions now live in `agent.py`. The Claude scheduled tasks below were stopped because the run safety check refuses to put the AWS key into a run. Kept for reference only; they contain no keys.
+
 # Scheduled task instructions
 
 These are the saved prompts of the four Claude scheduled tasks. The real copies live in each task's settings; this file is the reference. Replace the two `PASTE_...` values with the `earnings-radar-bot` access key **only inside the task settings**, never in this repo.
