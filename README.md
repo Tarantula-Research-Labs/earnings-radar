@@ -6,23 +6,21 @@ For each company that reports, it records when results were filed, picks the rea
 
 ## How it runs
 
-Four Claude scheduled tasks (IST) do the work; GitHub Actions only saves the results to S3.
+GitHub Actions runs the number work (`.github/workflows/radar.yml`), weekdays, IST. GitHub may start a run a few minutes late.
 
-| Task | Time | Does |
+| Run | Time | Does |
 |---|---|---|
-| Morning | 08:45 weekdays | Add today's reporters from the NSE event calendar |
-| Afternoon | 15:20 weekdays | Check NSE announcements for filed results |
-| Evening | 20:50 weekdays | Check again, price every tracked stock, read news, write 5-day summaries, fundamentals and outlooks, score outlooks |
-| Hypotheses | 23:07 on the 13th and 28th | One hypothesis per sector for the stocks that reported in the last 15 days |
+| Morning | 08:45 | Add today's reporters from the NSE event calendar |
+| Afternoon | 15:20 | Check NSE announcements for filed results |
+| Evening | 20:50 | Check again, price every tracked stock (D0–D5), score outlooks |
 
-Each task, with no AWS key:
-1. `python3 radar.py pull` downloads the current data from the Tremor site's public API into `./store`.
-2. `python3 radar.py <commands> --local store` does the work on those files and lists the files it changed in `out/changed.txt`.
-3. `./push_inbox.sh` pushes those files to the `inbox` branch.
+News reasons, 5-day summaries, fundamentals tables, outlooks and sector hypotheses are written on request in a Claude chat: `radar.py evening` / `hypo` produce the to-do lists in `out/`, and `radar.py merge` / `hyposave` validate and save the answers. (Claude scheduled tasks were retired on 30 Oct 2026: their safety check no longer allows running this script or using the AWS key.)
 
-`.github/workflows/store.yml` then uploads them to S3 with the key kept in GitHub Secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). The Claude runs never see the key, so the run safety check has nothing to block.
+**Secrets** (repo Settings → Secrets and variables → Actions): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — the `earnings-radar-bot` key, S3 only.
 
-No packages are needed: everything uses the Python standard library.
+**Run by hand:** Actions tab → Earnings Radar → Run workflow (choose the task; `since` backfills reporters), or push `.github/run-now.json` containing `{"task": "evening"}`.
+
+No packages are needed: everything uses the Python standard library. `radar.py pull` downloads the current data from the Tremor site without any key.
 
 ## Fundamentals tables
 

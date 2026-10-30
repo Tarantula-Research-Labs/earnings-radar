@@ -1,0 +1,87 @@
+# Earnings Radar number work on GitHub Actions: reporters, filings, prices and returns.
+# News reasons, summaries, fundamentals, outlooks and hypotheses are done on request in a Claude chat.
+# Secrets (repo Settings -> Secrets and variables -> Actions):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  -> earnings-radar-bot key (S3 only)
+name: Earnings Radar
+
+on:
+  schedule:
+    - cron: "15 3 * * 1-5"     # 08:45 IST morning: add today's reporters
+    - cron: "50 9 * * 1-5"     # 15:20 IST afternoon: check filings
+    - cron: "20 15 * * 1-5"    # 20:50 IST evening: check again + prices and returns
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "morning, afternoon or evening"
+        required: true
+        default: evening
+      since:
+        description: "morning only: add reporters from this date (YYYY-MM-DD) to today"
+        required: false
+  push:
+    branches: [main]
+    paths: [".github/run-now.json"]   # push this file to start a run: {"task": "evening"}
+
+concurrency:
+  group: earnings-radar        # never two runs writing to S3 at once
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # only for the monthly keep-alive commit
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ap-south-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Pick the task
+        id: pick
+        run: |
+          t=""; s=""
+          case "${{ github.event_name }}" in
+            schedule)
+              case "${{ github.event.schedule }}" in
+                "15 3 * * 1-5")  t=morning ;;
+                "50 9 * * 1-5")  t=afternoon ;;
+                "20 15 * * 1-5") t=evening ;;
+              esac ;;
+            workflow_dispatch) t="${{ inputs.task }}"; s="${{ inputs.since }}" ;;
+            push) t=$(python3 -c "import json;print(json.load(open('.github/run-now.json')).get('task',''))")
+                  s=$(python3 -c "import json;print(json.load(open('.github/run-now.json')).get('since',''))") ;;
+          esac
+          echo "task=$t" >> "$GITHUB_OUTPUT"; echo "since=$s" >> "$GITHUB_OUTPUT"
+          echo "Task: $t ${s:+(since $s)}"
+
+      - name: Morning
+        if: steps.pick.outputs.task == 'morning'
+        run: |
+          if [ -n "${{ steps.pick.outputs.since }}" ]; then
+            python3 radar.py morning,check,log --task morning --since "${{ steps.pick.outputs.since }}"
+          else
+            python3 radar.py morning,check,log --task morning
+          fi
+
+      - name: Afternoon
+        if: steps.pick.outputs.task == 'afternoon'
+        run: python3 radar.py check,log --task afternoon
+
+      - name: Evening
+        if: steps.pick.outputs.task == 'evening'
+        run: python3 radar.py evening,log --task evening --notes "prices only; news reading is done on request"
+
+      - name: Keep the schedule alive
+        # GitHub pauses scheduled workflows in repos with no commits for 60 days.
+        if: steps.pick.outputs.task == 'morning' && github.event_name == 'schedule'
+        run: |
+          [ "$(date -u +%d)" = "01" ] || exit 0
+          date -u +%FT%TZ > .github/last-run.txt
+          git config user.name "radar-bot"; git config user.email "radar-bot@users.noreply.github.com"
+          git add .github/last-run.txt && git commit -qm "keep-alive $(date -u +%F)" && git push || true
