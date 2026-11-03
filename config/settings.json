@@ -51,5 +51,8 @@
   "bucket": "trl-earnings-radar",
   "prefix": "earnings-radar",
   "region": "ap-south-1"
+ },
+ "symbol_aliases": {
+  "ICICIPRULI": "ICICILIFE"
  }
 }

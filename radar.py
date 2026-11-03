@@ -23,7 +23,8 @@ Commands (chain with commas, e.g. morning,check,log)
   pull                              download current data from the Tremor site into ./store (no key needed)
   files                             print the S3 keys a run needs (the task downloads them into ./store)
   hypo     [--date D]               every 15 days: group the window's reporters by sector -> out/hypo_todo.json
-  hyposave <hypotheses.json>        save the sector hypotheses to <prefix>/hypotheses/
+  hyposave <hypotheses.json>        save the sector hypotheses to <prefix>/hypotheses/ and re-check all earlier windows
+  validate [notes.json]             re-check every saved hypothesis window against the latest close
   log      --task T [--status S] [--notes N]   add a run-log line
 
 Flags: --out DIR (todo files + local snapshot, default ./out),
@@ -139,6 +140,18 @@ def index_closes(d):
         return out
     return cached(f"idx_{d:%Y%m%d}.json", load)
 
+ALIASES = {}   # old NSE symbol -> new symbol, from config "symbol_aliases" (set when the Store loads)
+
+def bc_key(bc, sym):
+    """The key for sym in a bhavcopy, following a rename listed in symbol_aliases; None if absent."""
+    if not bc: return None
+    if sym in bc: return sym
+    seen = set()
+    while sym in ALIASES and sym not in seen:
+        seen.add(sym); sym = ALIASES[sym]
+        if sym in bc: return sym
+    return None
+
 def lr(a, b):
     return math.log(a / b) if a and b and a > 0 and b > 0 else None
 
@@ -252,6 +265,7 @@ class Store:
         self.cfg = read_repo_json("config", "settings.json")
         self.uni = read_repo_json("config", "nifty500.json")
         self.sc = season_code(self.cfg)
+        ALIASES.clear(); ALIASES.update(self.cfg.get("symbol_aliases") or {})
         st = self.cfg.get("storage", {})
         self.bucket = st.get("bucket"); self.region = st.get("region", "ap-south-1")
         self.prefix = f"{st.get('prefix', 'earnings-radar')}/{self.sc}"
@@ -556,10 +570,11 @@ def cmd_evening(db, args):
         for n, d in enumerate(days):
             if d > today: break
             bc, ix = bhavcopy(d), index_closes(d)
-            if not bc or sym not in bc:
+            key = bc_key(bc, sym)
+            if not key:
                 if d < today or now.time() >= dt.time(19, 0): gaps.append(f"{sym} D{n} {d}")
                 break
-            s = bc[sym]
+            s = bc[key]
             row = {"day_n": n, "date": d_iso(d), "close": s["close"], "prev_close": s["prev_close"], "source": "NSE bhavcopy"}
             if n >= 1:
                 sr = lr(s["close"], s["prev_close"])
@@ -776,10 +791,11 @@ def update_tracks(events, today):
         d = latest_close_day(min(today, hz), d_parse(t["from_date"]))
         if not d or (t.get("last_date") and d_iso(d) <= t["last_date"]): continue
         bc, ix = bhavcopy(d), index_closes(d)
-        if sym not in bc or sx not in ix: continue
-        sr = lr(bc[sym]["close"], t["from_close"]); xr = lr(ix[sx]["close"], t["from_sector"])
+        key = bc_key(bc, sym)
+        if not key or sx not in ix: continue
+        sr = lr(bc[key]["close"], t["from_close"]); xr = lr(ix[sx]["close"], t["from_sector"])
         ex = sr - xr if sr is not None and xr is not None else None
-        t.update({"last_date": d_iso(d), "last_close": bc[sym]["close"], "last_sector": ix[sx]["close"],
+        t.update({"last_date": d_iso(d), "last_close": bc[key]["close"], "last_sector": ix[sx]["close"],
                   "stock_return": sr, "sector_return": xr, "excess": ex,
                   "verdict": verdict_for(o["stance"], ex), "status": "final" if d >= hz else "open",
                   "note": "stock moved over 40% - check for split/bonus" if sr is not None and abs(sr) > 0.4 else None,
@@ -950,18 +966,105 @@ def cmd_hyposave(db, args):
     allh.setdefault("windows", {})[todo["window_id"]] = {
         "window_id": todo["window_id"], "from": todo["from"], "to": todo["to"], "written_at": stamp(),
         "too_early": todo.get("too_early") or [], "sectors": secs}
+    # Re-check every earlier window against the latest close (notes from the run, if given).
+    nv = validate_windows(db, allh, skip=todo["window_id"], notes=inp.get("validation_notes") or {})
+    _save_hypos(db, allh)
+    print(f"Saved {len(secs)} sector hypothesis(es) for {todo['from']} to {todo['to']}; "
+          f"re-checked {nv} earlier window(s) -> {_hypo_prefix(db)}/hypotheses.json")
+    return {"hypotheses": len(secs), "validated_windows": nv}
+
+# ---------------------------------------------------------------- hypothesis validation
+# For each earlier window, every stock is compared with its sector index from its day-5 close (or its last
+# tracked day) to the latest close. "kept" = it kept moving the way it did in its first five days,
+# "reversed" = it moved the other way, "flat" = within ±0.5%. A sector's hypothesis is "holding" when at most
+# a third of its stocks reversed, "not holding" when more than half reversed, otherwise "mixed".
+VAL_BAND = 0.005
+
+def _val_verdict(kept, rev, flat):
+    m = kept + rev + flat
+    if not m: return None
+    return "holding" if rev <= m / 3 else "not holding" if rev > m / 2 else "mixed"
+
+def validate_windows(db, allh, skip=None, notes=None):
+    wins = allh.get("windows") or {}
+    todo = [w for k, w in wins.items() if k != skip]
+    if not todo: return 0
+    pool = dict(db.events)
+    for sc in db.other_seasons():
+        pool.update(db._read_json("events.json", db.season_prefix(sc)) or {})
+    today = now_ist().date()
+    d = latest_close_day(today, today - dt.timedelta(days=10))
+    if not d: print("Validation skipped: no NSE close in the last 10 days."); return 0
+    bc, ix = bhavcopy(d), index_closes(d)
+    todo = [w for w in todo if w.get("to", "") < d_iso(d)]   # only windows that ended before the latest close
+    for w in todo:
+        old = (w.get("validation") or {}).get("sectors") or {}
+        wnotes = (notes or {}).get(w["window_id"]) or {}
+        out = {}
+        for sec in w.get("sectors") or []:
+            name, rows, cnt = sec["sector"], [], {"kept": 0, "reversed": 0, "flat": 0}
+            for st in sec.get("stocks") or []:
+                e = pool.get(st.get("event_id")) or {}
+                sym = e.get("symbol") or st.get("symbol")
+                p = {x.get("day_n"): x for x in e.get("prices") or []}
+                sx = e.get("sector_index") or sec.get("sector_index")
+                base = p.get(NEWS_DAYS) or (p[max(p)] if p else None)
+                row = {"symbol": sym, "first_days": e.get("cum_abnormal"), "base_day": None, "since_base": None,
+                       "since_results": None, "status": "no data"}
+                key = bc_key(bc, sym)
+                if base and key and ix and sx in ix and base.get("day_n", 0) >= 1 and d_parse(base["date"]) < d:
+                    i0 = index_closes(d_parse(base["date"])) or {}
+                    if sx in i0:
+                        sb = lr(bc[key]["close"], base["close"]); xb = lr(ix[sx]["close"], i0[sx]["close"])
+                        row.update({"base_day": base["day_n"], "base_date": base["date"],
+                                    "since_base": sb - xb if sb is not None and xb is not None else None})
+                    d0 = p.get(0); i00 = index_closes(d_parse(d0["date"])) if d0 else None
+                    if d0 and i00 and sx in i00:
+                        s0 = lr(bc[key]["close"], d0["close"]); x0 = lr(ix[sx]["close"], i00[sx]["close"])
+                        row["since_results"] = s0 - x0 if s0 is not None and x0 is not None else None
+                    sb, fd = row["since_base"], row["first_days"]
+                    if sb is not None:
+                        row["status"] = ("flat" if abs(sb) < VAL_BAND or not fd else
+                                         "kept" if (sb > 0) == (fd > 0) else "reversed")
+                        cnt[row["status"]] += 1
+                rows.append(row)
+            note = _txt(wnotes.get(name), 400) or (old.get(name) or {}).get("note")
+            out[name] = {**cnt, "verdict": _val_verdict(cnt["kept"], cnt["reversed"], cnt["flat"]),
+                         "note": note, "stocks": rows}
+        w["validation"] = {"as_of": d_iso(d), "updated_at": stamp(), "sectors": out}
+        v = [x["verdict"] for x in out.values() if x["verdict"]]
+        print(f"  window {w['from']} to {w['to']}: " + ", ".join(f"{k} {v.count(k)}" for k in ("holding", "mixed", "not holding")))
+    return len(todo)
+
+def _save_hypos(db, allh):
     pre = _hypo_prefix(db)
     db._write("hypotheses.json", json.dumps(allh, ensure_ascii=False), "application/json", pre)
-    rows = [dict(sx, window_id=w["window_id"], window_from=w["from"], window_to=w["to"], written_at=w["written_at"],
-                 symbols=[x["symbol"] for x in sx["stocks"]], **{f"stat_{k}": v for k, v in sx["stats"].items()})
-            for _, w in sorted(allh["windows"].items()) for sx in w["sectors"]]
+    rows = []
+    for _, w in sorted(allh["windows"].items()):
+        val = w.get("validation") or {}
+        for sx in w["sectors"]:
+            v = (val.get("sectors") or {}).get(sx["sector"]) or {}
+            rows.append(dict(sx, window_id=w["window_id"], window_from=w["from"], window_to=w["to"], written_at=w["written_at"],
+                             symbols=[x["symbol"] for x in sx["stocks"]], **{f"stat_{k}": v2 for k, v2 in sx["stats"].items()},
+                             check_as_of=val.get("as_of"), check_verdict=v.get("verdict"), check_kept=v.get("kept"),
+                             check_reversed=v.get("reversed"), check_flat=v.get("flat"), check_note=v.get("note")))
     db._write("hypotheses.csv", _csv(rows, ["window_id", "window_from", "window_to", "written_at", "sector", "sector_index",
                                              "symbols", "stat_stocks", "stat_beat_sector", "stat_avg_d1_abnormal",
                                              "stat_avg_total_abnormal", "stat_finished_5_days", "confidence", "hypothesis",
-                                             "results_view", "news_view", "analyst_view", "evidence", "would_change_if"]),
+                                             "results_view", "news_view", "analyst_view", "evidence", "would_change_if",
+                                             "check_as_of", "check_verdict", "check_kept", "check_reversed", "check_flat",
+                                             "check_note"]),
               "text/csv", pre)
-    print(f"Saved {len(secs)} sector hypothesis(es) for {todo['from']} to {todo['to']} -> {pre}/hypotheses.json")
-    return {"hypotheses": len(secs)}
+
+def cmd_validate(db, args):
+    """Re-check every saved hypothesis window against the latest close (optional notes file as the argument)."""
+    notes = {}
+    if getattr(args, "file", None):
+        with open(args.file, encoding="utf-8") as f: notes = (json.load(f) or {}).get("validation_notes") or {}
+    allh = _load_hypos(db)
+    n = validate_windows(db, allh, notes=notes)
+    if n: _save_hypos(db, allh)
+    return {"validated_windows": n}
 
 # ---------------------------------------------------------------- run log
 def cmd_log(db, args, auto_status="ok", auto_notes=""):
@@ -1059,12 +1162,12 @@ def main():
                 print("Download from S3 failed, so nothing was run or saved:\n  " + "\n  ".join(bad), file=sys.stderr)
                 sys.exit(2)
     fns = {"morning": cmd_morning, "check": cmd_check, "evening": cmd_evening, "merge": cmd_merge,
-           "hypo": cmd_hypo, "hyposave": cmd_hyposave}
+           "hypo": cmd_hypo, "hyposave": cmd_hyposave, "validate": cmd_validate}
     bad = [s for s in steps if s not in fns and s != "log"]
     if bad: ap.error(f"unknown command(s): {bad}")
     if "merge" in steps or "hyposave" in steps:
         if not args.files: ap.error("merge / hyposave need a JSON file")
-        args.file = args.files[0]
+    args.file = args.files[0] if args.files else None
     args.started = args.started or stamp()
     db = Store(args.out, args.local)
     notes, status = [], "ok"

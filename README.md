@@ -44,6 +44,12 @@ Between −2% and +2% a positive or negative call is "too close". At `horizon_en
 
 Every 15 days (13th and 28th of each month) a separate task groups the stocks whose results were filed since the last window by sector (NSE industry) and writes, for each sector, a hypothesis of what drove the market's reaction: what the results showed, what the news emphasised, what analysts said, the evidence, and what would prove it wrong. The script adds the numbers (stocks, how many beat the sector, average abnormal moves). Stocks filed but not priced yet wait for the next window. Every window is kept in `s3://trl-earnings-radar/earnings-radar/hypotheses/hypotheses.json` and `hypotheses.csv`, outside the season folders.
 
+## Hypothesis checks
+
+Every hypothesis run (`radar.py hyposave`) re-checks all earlier windows; `radar.py validate [notes.json]` does the same on its own. For each stock the script compares the stock with its sector index from its day-5 close to the latest close: **kept going** (moved the same way as in its first five days), **reversed**, or **flat** (within ±0.5%). A sector hypothesis is **holding** when at most a third of its stocks reversed, **not holding** when more than half did, otherwise **mixed**. A short note on what the next window showed can be added per sector (`{"validation_notes": {"<window_id>": {"<sector>": "..."}}}`). Results are stored under `validation` in `hypotheses.json` and in `hypotheses.csv`. Only windows that ended before the latest close are checked.
+
+NSE symbol renames (for example ICICIPRULI → ICICILIFE) are listed in `config/settings.json` under `symbol_aliases`, so prices and outlook tracks keep updating.
+
 ## Rules
 
 - Results filed before 15:30 IST on a trading day → that day is the reaction day (D1). Later, or on a non-trading day → next trading day.
