@@ -5,10 +5,11 @@
 name: Earnings Radar
 
 on:
-  schedule:
-    - cron: "15 3 * * 1-5"     # 08:45 IST morning: add today's reporters
-    - cron: "50 9 * * 1-5"     # 15:20 IST afternoon: check filings
-    - cron: "20 15 * * 1-5"    # 20:50 IST evening: check again + prices and returns
+  # Automatic runs turned off on 5 Nov 2026. To turn them back on, restore these three lines:
+  # schedule:
+  #   - cron: "15 3 * * 1-5"     # 08:45 IST morning: add today's reporters
+  #   - cron: "50 9 * * 1-5"     # 15:20 IST afternoon: check filings
+  #   - cron: "20 15 * * 1-5"    # 20:50 IST evening: check again + prices and returns
   workflow_dispatch:
     inputs:
       task:
@@ -18,9 +19,6 @@ on:
       since:
         description: "morning only: add reporters from this date (YYYY-MM-DD) to today"
         required: false
-  push:
-    branches: [main]
-    paths: [".github/run-now.json"]   # push this file to start a run: {"task": "evening"}
 
 concurrency:
   group: earnings-radar        # never two runs writing to S3 at once
